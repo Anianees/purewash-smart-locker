@@ -135,72 +135,9 @@ def notify_customer_whatsapp(phone, name):
 # ----------------------------------------------------------------------
 # CUSTOMER-FACING PAGE (QR on the locker points to /locker/<locker_id>)
 # ----------------------------------------------------------------------
-PAGE = """ ... """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Purewash Drop-off</title>
-<style>
-  body { font-family: system-ui, sans-serif; margin: 0; background: #f4f7f9;
-         display: flex; min-height: 100vh; align-items: center; justify-content: center; }
-  .card { background: #fff; border-radius: 16px; padding: 28px 24px; width: 90%;
-          max-width: 380px; box-shadow: 0 4px 20px rgba(0,0,0,.08); }
-  h1 { font-size: 22px; margin: 0 0 4px; color: #143a52; }
-  p.sub { margin: 0 0 20px; color: #667; font-size: 14px; }
-  label { font-size: 13px; color: #445; display: block; margin: 14px 0 6px; }
-  input { width: 100%; padding: 12px; border: 1px solid #ccd; border-radius: 10px;
-          font-size: 16px; box-sizing: border-box; }
-  button { width: 100%; margin-top: 22px; padding: 14px; border: 0; border-radius: 10px;
-           background: #0e7a5f; color: #fff; font-size: 17px; font-weight: 600; }
-  button:disabled { background: #9bc; }
-  .ok { text-align: center; }
-  .ok .big { font-size: 48px; }
-</style>
-</head>
-<body>
-<div class="card" id="card">
-  <h1>Purewash Drop-off</h1>
-  <p class="sub">Locker {{ locker_id }} &middot; Enter your details to open the compartment</p>
-  <form id="f">
-    <label>Your name</label>
-    <input id="name" required maxlength="60" placeholder="Full name">
-    <label>Phone number (WhatsApp)</label>
-    <input id="phone" required inputmode="numeric" pattern="[0-9]{10}"
-           maxlength="10" placeholder="10-digit mobile number">
-    <button id="btn" type="submit">Open Compartment</button>
-  </form>
-</div>
-<script>
-document.getElementById('f').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const btn = document.getElementById('btn');
-  btn.disabled = true; btn.textContent = 'Opening...';
-  const res = await fetch('/api/dropoff', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({
-      locker_id: '{{ locker_id }}',
-      name: document.getElementById('name').value.trim(),
-      phone: document.getElementById('phone').value.trim()
-    })
-  });
-  const data = await res.json();
-  if (data.ok) {
-    document.getElementById('card').innerHTML =
-      '<div class="ok"><div class="big">🔓</div><h1>Compartment opening!</h1>' +
-      '<p class="sub">Place your clothes inside and close the door firmly. ' +
-      'You\\'ll get a WhatsApp confirmation shortly.</p></div>';
-  } else {
-    btn.disabled = false; btn.textContent = 'Open Compartment';
-    alert(data.error || 'Something went wrong, please try again.');
-  }
-});
-</script>
-</body>
-</html>
-"""
+
+ 
+ 
 @app.route("/")
 def home():
     return redirect("/locker/locker1")
