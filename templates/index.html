@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+<meta charset="UTF-8">
+
+<meta name="viewport"
+content="width=device-width, initial-scale=1.0">
+
+<title>Purewash Smart Locker</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+
+</head>
+
+<body>
+
+<div class="background">
+
+<div class="bubble b1"></div>
+<div class="bubble b2"></div>
+<div class="bubble b3"></div>
+<div class="bubble b4"></div>
+<div class="bubble b5"></div>
+
+</div>
+
+<div class="wrapper">
+
+<div class="glass-card">
+
+<div class="logo-area">
+
+<img src="{{ url_for('static', filename='img/logo.png') }}" class="logo">
+
+<h1>PUREWASH</h1>
+
+<p class="subtitle">
+
+Drop • Lock • Relax
+
+</p>
+
+</div>
+
+<div class="steps">
+
+<div class="step">
+
+<div class="circle">
+
+1
+
+</div>
+
+<span>Scan QR</span>
+
+</div>
+
+<div class="step">
+
+<div class="circle">
+
+2
+
+</div>
+
+<span>Drop Laundry</span>
+
+</div>
+
+<div class="step">
+
+<div class="circle">
+
+3
+
+</div>
+
+<span>We Collect</span>
+
+</div>
+
+</div>
+
+<form id="dropoffForm">
+
+<input
+type="hidden"
+id="locker_id"
+value="{{ locker_id }}">
+
+<div class="input-group">
+
+<label>
+
+Full Name
+
+</label>
+
+<input
+
+type="text"
+
+id="name"
+
+placeholder="John Doe"
+
+required
+
+>
+
+</div>
+
+<div class="input-group">
+
+<label>
+
+WhatsApp Number
+
+</label>
+
+<input
+
+type="tel"
+
+id="phone"
+
+placeholder="9876543210"
+
+maxlength="10"
+
+required
+
+>
+
+</div>
+
+<button id="submitBtn">
+
+Open Compartment
+
+</button>
+
+</form>
+
+<div class="secure">
+
+🔒 Secure Contactless Laundry Drop-Off
+
+</div>
+
+<div id="loadingScreen" class="hidden">
+
+<div class="loader"></div>
+
+<h2>
+
+Connecting to Locker...
+
+</h2>
+
+<p>
+
+Please wait while your locker opens.
+
+</p>
+
+</div>
+
+<div id="successScreen" class="hidden">
+
+<div class="success-icon">
+
+✅
+
+</div>
+
+<h2>
+
+Locker Opened
+
+</h2>
+
+<p>
+
+Place your clothes inside and close the door firmly.
+
+</p>
+
+</div>
+
+</div>
+
+</div>
+
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+
+</body>
+
+</html>
