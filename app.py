@@ -19,7 +19,14 @@ To run locally:  pip install flask requests
 import sqlite3
 import time
 import os
-from flask import Flask, request, jsonify, render_template_string, g
+from flask import (
+    Flask,
+    request,
+    jsonify,
+    render_template,
+    redirect,
+    g,
+)
 
 app = Flask(__name__)
 DB_PATH = os.environ.get("DB_PATH", "purewash.db")
@@ -128,7 +135,7 @@ def notify_customer_whatsapp(phone, name):
 # ----------------------------------------------------------------------
 # CUSTOMER-FACING PAGE (QR on the locker points to /locker/<locker_id>)
 # ----------------------------------------------------------------------
-PAGE = """
+PAGE = """ ... """
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -194,10 +201,13 @@ document.getElementById('f').addEventListener('submit', async (e) => {
 </body>
 </html>
 """
+@app.route("/")
+def home():
+    return redirect("/locker/locker1")
 
 @app.route("/locker/<locker_id>")
 def locker_page(locker_id):
-    return render_template_string(PAGE, locker_id=locker_id)
+    return render_template("index.html", locker_id=locker_id)
 
 # ----------------------------------------------------------------------
 # API
