@@ -1,0 +1,481 @@
+<!--
+  Purewash Smart Locker — customer drop-off page
+  ------------------------------------------------
+  Self-contained (no build step). Drop into Flask as templates/drop_off.html.
+  Configure behaviour in the CONFIG block near the bottom of this file.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="theme-color" content="#0e3140" />
+<title>Purewash — Smart Locker Drop-off</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&family=Dancing+Script:wght@600&display=swap" rel="stylesheet">
+
+<style>
+  :root{
+    --teal:        #0e8f83;
+    --teal-deep:   #0a6f6c;
+    --teal-bright: #12a594;
+    --navy:        #163455;   /* headings */
+    --navy-deep:   #0e3140;   /* footer wave */
+    --ink:         #3f5566;   /* body text */
+    --muted:       #6d8494;
+    --line:        #e6eef1;
+    --card:        #ffffff;
+    --bg-top:      #f2f8fb;
+    --bg-mid:      #dbe9ef;
+    --radius:      26px;
+    --shadow:      0 30px 70px -30px rgba(14,49,64,.35);
+  }
+
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  html{ scroll-behavior:smooth; }
+
+  body{
+    font-family:'Poppins', system-ui, sans-serif;
+    color:var(--ink);
+    background:
+      radial-gradient(900px 500px at 12% -5%, #ffffff 0%, rgba(255,255,255,0) 55%),
+      radial-gradient(1100px 700px at 90% 10%, #eaf5f8 0%, rgba(234,245,248,0) 60%),
+      linear-gradient(180deg, var(--bg-top) 0%, var(--bg-mid) 62%, #cbdee6 100%);
+    min-height:100vh;
+    position:relative;
+    overflow-x:hidden;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  /* soft floating bubbles */
+  .bubble{ position:fixed; border-radius:50%; pointer-events:none; z-index:0;
+    background:radial-gradient(circle at 32% 30%, rgba(255,255,255,.9), rgba(255,255,255,.05) 60%);
+    border:1px solid rgba(255,255,255,.55); }
+  .bubble.b1{ width:80px; height:80px; top:6%;  left:34%; }
+  .bubble.b2{ width:46px; height:46px; top:11%; left:60%; }
+  .bubble.b3{ width:120px;height:120px;top:74%; left:8%;  opacity:.5; }
+  .bubble.b4{ width:34px; height:34px; top:82%; left:44%; opacity:.6; }
+  .bubble.b5{ width:60px; height:60px; top:20%; left:5%;  opacity:.5; }
+
+  /* footer wave */
+  .wave{ position:fixed; left:0; right:0; bottom:0; height:34vh; min-height:230px; z-index:0;
+    background:linear-gradient(180deg, var(--navy) 0%, var(--navy-deep) 100%);
+    clip-path:polygon(0 22%, 12% 15%, 28% 20%, 44% 12%, 60% 18%, 76% 10%, 90% 16%, 100% 11%, 100% 100%, 0 100%); }
+
+  .page{ position:relative; z-index:2; max-width:1240px; margin:0 auto; padding:34px 22px 40px; }
+
+  /* ---------- brand bar ---------- */
+  .brandbar{ display:flex; align-items:center; gap:14px; margin-bottom:26px; }
+  .logo{ width:52px; height:52px; border-radius:15px; flex:none;
+    background:linear-gradient(150deg,#ffffff,#eef7f7);
+    box-shadow:0 8px 20px -8px rgba(14,143,131,.5), inset 0 0 0 1px rgba(14,143,131,.08);
+    display:grid; place-items:center; }
+  .logo svg{ width:30px; height:30px; }
+  .brand-name{ line-height:1; }
+  .brand-name .b1{ font-weight:800; letter-spacing:.14em; font-size:1.35rem; color:var(--navy); }
+  .brand-name .b2{ font-weight:500; letter-spacing:.42em; font-size:.6rem; color:var(--teal); margin-top:4px; }
+
+  /* ---------- grid ---------- */
+  .grid{ display:grid; gap:30px; grid-template-columns:1fr; }
+  .col-copy{ grid-area:copy; }
+  .col-card{ grid-area:card; }
+  .col-features{ grid-area:features; }
+  .col-locker{ grid-area:locker; display:none; }
+  .grid{ grid-template-areas:"copy" "card" "features"; }
+
+  /* ---------- hero copy ---------- */
+  .col-copy h1{ font-size:clamp(2.3rem,5vw,3.3rem); line-height:1.05; font-weight:800; color:var(--navy); letter-spacing:-.02em; }
+  .col-copy h1 .accent{ color:var(--teal-bright); display:block; }
+  .col-copy .lede{ margin-top:18px; font-size:1.08rem; color:var(--ink); max-width:34ch; }
+
+  /* features */
+  .features{ margin-top:30px; display:flex; flex-direction:column; gap:20px; }
+  .feature{ display:flex; gap:15px; align-items:flex-start; }
+  .feature .fi{ width:46px; height:46px; border-radius:14px; flex:none; display:grid; place-items:center;
+    background:linear-gradient(150deg,#ffffff,#e9f4f4);
+    box-shadow:0 10px 24px -14px rgba(14,49,64,.4), inset 0 0 0 1px rgba(14,143,131,.1);
+    color:var(--teal-deep); }
+  .feature .fi svg{ width:22px; height:22px; }
+  .feature h3{ font-size:.98rem; color:var(--navy); font-weight:600; }
+  .feature p{ font-size:.85rem; color:var(--muted); margin-top:2px; line-height:1.4; }
+
+  /* whatsapp help */
+  .wa-help{ margin-top:28px; display:flex; align-items:center; gap:14px; background:#fff;
+    border:1px solid var(--line); border-radius:18px; padding:14px 18px; max-width:340px;
+    box-shadow:0 16px 40px -26px rgba(14,49,64,.5); }
+  .wa-help .wa-ic{ width:42px; height:42px; border-radius:50%; background:#25d366; color:#fff; display:grid; place-items:center; flex:none; }
+  .wa-help .wa-ic svg{ width:24px; height:24px; }
+  .wa-help .wa-t small{ display:block; font-size:.72rem; color:var(--muted); }
+  .wa-help .wa-t b{ font-size:.86rem; color:var(--ink); font-weight:500; }
+  .wa-help a{ display:block; color:var(--teal-deep); font-weight:700; font-size:1rem; text-decoration:none; margin-top:2px; }
+
+  /* ---------- the card ---------- */
+  .card{ background:var(--card); border-radius:var(--radius); padding:34px 34px 30px;
+    box-shadow:var(--shadow); border:1px solid rgba(255,255,255,.7); position:relative; }
+  .card-logo{ width:66px; height:66px; border-radius:20px; margin:0 auto -6px; display:grid; place-items:center;
+    background:linear-gradient(150deg,#ffffff,#eaf6f5);
+    box-shadow:0 14px 30px -14px rgba(14,143,131,.55), inset 0 0 0 1px rgba(14,143,131,.1); transform:translateY(-42px); }
+  .card-logo svg{ width:38px; height:38px; }
+  .card-head{ text-align:center; margin-top:-30px; }
+  .card-head h2{ font-size:1.65rem; font-weight:700; color:var(--navy); letter-spacing:-.01em; }
+  .card-head h2 span{ color:var(--teal-bright); }
+  .div-lock{ display:flex; align-items:center; gap:12px; margin:16px auto 12px; max-width:220px; color:var(--muted); }
+  .div-lock::before,.div-lock::after{ content:""; height:1px; flex:1; background:var(--line); }
+  .div-lock svg{ width:16px; height:16px; }
+  .card-sub{ text-align:center; font-size:.9rem; color:var(--muted); line-height:1.5; }
+  .card-sub b{ color:var(--ink); font-weight:600; }
+
+  /* form */
+  form{ margin-top:24px; }
+  .field{ margin-bottom:18px; }
+  .field label{ display:block; font-size:.85rem; font-weight:600; color:var(--navy); margin-bottom:8px; }
+  .input{ display:flex; align-items:center; gap:10px; border:1.5px solid var(--line); border-radius:14px;
+    padding:0 14px; background:#fbfdfe; transition:border-color .15s, box-shadow .15s; }
+  .input:focus-within{ border-color:var(--teal-bright); box-shadow:0 0 0 4px rgba(18,165,148,.12); background:#fff; }
+  .input svg{ width:20px; height:20px; color:var(--muted); flex:none; }
+  .input input{ border:none; outline:none; background:transparent; width:100%; padding:15px 0; font:inherit; font-size:1rem; color:var(--navy); }
+  .input input::placeholder{ color:#a8b8c2; }
+  .prefix{ font-size:1rem; color:var(--ink); font-weight:500; }
+  .err{ display:none; color:#d64545; font-size:.78rem; margin-top:6px; }
+  .field.invalid .input{ border-color:#e69090; box-shadow:0 0 0 4px rgba(214,69,69,.1); }
+  .field.invalid .err{ display:block; }
+
+  /* button */
+  .btn{ width:100%; border:none; cursor:pointer; border-radius:16px; padding:6px; margin-top:6px;
+    background:linear-gradient(135deg,#0c7c78 0%, #10a08e 100%);
+    box-shadow:0 18px 34px -16px rgba(12,124,120,.9); position:relative;
+    display:flex; align-items:center; justify-content:center; gap:0; overflow:hidden; transition:transform .12s, box-shadow .2s; }
+  .btn:hover{ transform:translateY(-1px); box-shadow:0 22px 40px -16px rgba(12,124,120,1); }
+  .btn:active{ transform:translateY(0); }
+  .btn:disabled{ opacity:.75; cursor:default; transform:none; }
+  .btn .lockring{ width:46px; height:46px; border-radius:12px; background:rgba(255,255,255,.14); display:grid; place-items:center;
+    box-shadow:inset 0 0 0 1px rgba(255,255,255,.35), 0 0 18px rgba(120,255,235,.35); margin-left:6px; flex:none; }
+  .btn .lockring svg{ width:22px; height:22px; color:#eafffb; }
+  .btn .label{ flex:1; color:#fff; font-weight:700; font-size:1.12rem; text-align:center; padding:16px 0; }
+  .btn .arrow svg{ width:22px; height:22px; color:#fff; margin-right:16px; }
+  .btn .spinner{ display:none; width:22px; height:22px; border:2.5px solid rgba(255,255,255,.35); border-top-color:#fff; border-radius:50%; margin-right:16px; animation:spin .7s linear infinite; }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+
+  .secure{ display:flex; align-items:center; justify-content:center; gap:7px; margin-top:14px; font-size:.82rem; color:var(--muted); }
+  .secure svg{ width:16px; height:16px; color:var(--teal); }
+
+  /* steps */
+  .steps{ margin-top:24px; padding-top:22px; border-top:1px solid var(--line); display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+  .step{ text-align:center; }
+  .step .num{ width:26px; height:26px; border-radius:50%; border:1.5px solid var(--teal); color:var(--teal-deep);
+    font-size:.78rem; font-weight:700; display:grid; place-items:center; margin:0 auto 8px; }
+  .step .sic{ color:var(--navy); margin-bottom:8px; }
+  .step .sic svg{ width:24px; height:24px; }
+  .step h4{ font-size:.84rem; color:var(--navy); font-weight:600; }
+  .step p{ font-size:.74rem; color:var(--muted); margin-top:3px; line-height:1.35; }
+
+  /* success state */
+  .success{ display:none; text-align:center; padding:14px 4px 6px; }
+  .success .tick{ width:76px; height:76px; border-radius:50%; margin:0 auto 18px; display:grid; place-items:center;
+    background:linear-gradient(135deg,#0c7c78,#10a08e); box-shadow:0 16px 34px -14px rgba(12,124,120,.9); }
+  .success .tick svg{ width:38px; height:38px; color:#fff; }
+  .success h2{ font-size:1.5rem; color:var(--navy); font-weight:700; }
+  .success p{ margin-top:10px; color:var(--ink); font-size:.98rem; line-height:1.5; }
+  .success .again{ margin-top:20px; background:none; border:1.5px solid var(--line); border-radius:12px;
+    padding:11px 22px; font:inherit; font-weight:600; color:var(--teal-deep); cursor:pointer; }
+  .card.done form,.card.done .steps,.card.done .div-lock,.card.done .card-sub{ display:none; }
+  .card.done .success{ display:block; }
+
+  /* ---------- decorative locker ---------- */
+  .locker{ position:relative; height:100%; min-height:420px; border-radius:24px; overflow:hidden;
+    background:linear-gradient(160deg,#2b4a56,#14313c);
+    box-shadow:var(--shadow), inset 0 0 0 1px rgba(255,255,255,.06); }
+  .locker .tag{ position:absolute; top:18px; right:18px; color:#dff5f2; font-weight:700; letter-spacing:.18em; font-size:.8rem;
+    text-shadow:0 0 14px rgba(120,255,235,.6); }
+  .locker .door{ position:absolute; inset:54px 20px 20px; border-radius:16px; border:1px solid rgba(255,255,255,.1);
+    background:linear-gradient(160deg,rgba(255,255,255,.06),rgba(255,255,255,0)); }
+  .locker .glow{ position:absolute; top:44%; left:50%; transform:translate(-50%,-50%); width:72px; height:82px; border-radius:14px;
+    display:grid; place-items:center; border:1.5px solid rgba(120,255,235,.7); box-shadow:0 0 26px rgba(120,255,235,.55), inset 0 0 18px rgba(120,255,235,.3); }
+  .locker .glow svg{ width:34px; height:34px; color:#c9fff5; filter:drop-shadow(0 0 6px rgba(120,255,235,.8)); }
+  .locker .seam{ position:absolute; left:20px; right:20px; height:1px; background:rgba(255,255,255,.06); }
+  .locker .seam.s1{ bottom:33%; } .locker .seam.s2{ bottom:0; display:none; }
+
+  /* ---------- trust strip ---------- */
+  .trust{ position:relative; z-index:2; margin:44px 0 26px; display:grid; grid-template-columns:repeat(4,1fr); gap:22px; color:#eaf5f5; }
+  .trust .t{ display:flex; align-items:flex-start; gap:12px; }
+  .trust .t + .t{ position:relative; }
+  .trust .t + .t::before{ content:""; position:absolute; left:-11px; top:2px; bottom:2px; width:1px; background:rgba(255,255,255,.14); }
+  .trust .t svg{ width:26px; height:26px; color:#8fd8cf; flex:none; margin-top:2px; }
+  .trust .t b{ display:block; font-size:.92rem; font-weight:600; }
+  .trust .t small{ font-size:.78rem; color:#b7cdd0; }
+
+  footer{ position:relative; z-index:2; text-align:center; padding-bottom:16px; }
+  footer .thanks{ color:#dceceb; font-size:.95rem; }
+  footer .script{ font-family:'Dancing Script',cursive; font-size:1.7rem; color:#5fd6c6; margin-top:4px; }
+
+  /* ---------- responsive ---------- */
+  @media (min-width:760px){
+    .grid{ grid-template-columns:1fr 1.12fr; grid-template-areas:"copy card" "features card"; align-items:start; }
+    .col-copy .lede{ max-width:30ch; }
+  }
+  @media (min-width:1120px){
+    .grid{ grid-template-columns:1fr 1.1fr .62fr; grid-template-areas:"copy card locker" "features card locker"; }
+    .col-locker{ display:block; }
+  }
+  @media (max-width:560px){
+    .page{ padding:22px 16px 30px; }
+    .card{ padding:26px 20px 24px; }
+    .trust{ grid-template-columns:1fr 1fr; gap:18px 22px; }
+    .steps{ gap:6px; }
+    .step p{ display:none; }
+  }
+  @media (prefers-reduced-motion:reduce){ *{ animation:none!important; transition:none!important; } }
+</style>
+</head>
+<body>
+
+  <div class="wave"></div>
+  <span class="bubble b1"></span><span class="bubble b2"></span><span class="bubble b3"></span>
+  <span class="bubble b4"></span><span class="bubble b5"></span>
+
+  <!-- SVG symbol library -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+    <symbol id="i-shirt" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20.38 3.46 16 2a4 4 0 0 1-8 0L3.62 3.46a2 2 0 0 0-1.34 2.23l.58 3.47a1 1 0 0 0 .99.84H6v10c0 1.1.9 2 2 2h8a2 2 0 0 0 2-2V10h2.15a1 1 0 0 0 .99-.84l.58-3.47a2 2 0 0 0-1.34-2.23z"/>
+    </symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/>
+    </symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>
+    </symbol>
+    <symbol id="i-bubbles" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="9" cy="13" r="4.5"/><circle cx="17" cy="8" r="2.6"/><circle cx="16" cy="16.5" r="1.6"/>
+    </symbol>
+    <symbol id="i-leaf" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M11 20A7 7 0 0 1 9.8 6.1C15.5 5 17 4.48 19 2c1 2 2 4.18 2 8 0 5.5-4.78 10-10 10Z"/><path d="M2 21c0-3 1.85-5.36 5.08-6"/>
+    </symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+    </symbol>
+    <symbol id="i-clipboard" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M9 12h6M9 16h4"/>
+    </symbol>
+    <symbol id="i-user" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>
+    </symbol>
+    <symbol id="i-wa" viewBox="0 0 24 24" fill="currentColor">
+      <path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91c0 1.75.46 3.45 1.32 4.95L2 22l5.25-1.38c1.45.79 3.08 1.21 4.79 1.21 5.46 0 9.91-4.45 9.91-9.91S17.5 2 12.04 2zm5.8 14.16c-.24.68-1.42 1.3-1.95 1.34-.5.05-.99.22-3.4-.71-2.86-1.13-4.7-4.04-4.84-4.23-.14-.19-1.16-1.54-1.16-2.94s.73-2.08 1-2.37c.24-.26.52-.32.7-.32.17 0 .35 0 .5.01.16.01.38-.06.59.45.24.58.81 2 .88 2.14.07.14.12.31.02.5-.09.19-.14.31-.28.48-.14.17-.29.37-.42.5-.14.14-.28.29-.12.57.17.28.74 1.22 1.59 1.98 1.09.97 2.01 1.27 2.29 1.42.28.14.45.12.61-.07.17-.19.71-.83.9-1.11.19-.28.37-.23.62-.14.25.09 1.62.76 1.9.9.28.14.46.21.53.33.07.12.07.68-.17 1.36z"/>
+    </symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M5 12h14M13 6l6 6-6 6"/>
+    </symbol>
+    <symbol id="i-sparkle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M18 6l-2.5 2.5M8.5 15.5 6 18"/>
+    </symbol>
+    <symbol id="i-heart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/>
+    </symbol>
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 12l5 5L20 6"/>
+    </symbol>
+  </defs></svg>
+
+  <div class="page">
+
+    <div class="brandbar">
+      <span class="logo"><svg style="color:var(--teal-deep)"><use href="#i-shirt"/></svg></span>
+      <span class="brand-name"><span class="b1">PUREWASH</span><span class="b2">LAUNDRY&nbsp;SERVICES</span></span>
+    </div>
+
+    <div class="grid">
+
+      <!-- LEFT: copy -->
+      <section class="col-copy">
+        <h1>Smart Locker.<span class="accent">Hassle Free.</span></h1>
+        <p class="lede">Drop your clothes anytime — we'll take care of the rest.</p>
+      </section>
+
+      <!-- CENTER: the card -->
+      <section class="col-card">
+        <div class="card" id="card">
+          <div class="card-logo"><svg style="color:var(--teal-deep)"><use href="#i-shirt"/></svg></div>
+
+          <!-- form view -->
+          <div class="card-head">
+            <h2>Purewash <span>Drop-off</span></h2>
+          </div>
+          <div class="div-lock"><svg><use href="#i-lock"/></svg></div>
+          <p class="card-sub">Locker <b id="lockerLabel">locker1</b> &nbsp;•&nbsp; Enter your details to open the compartment</p>
+
+          <form id="dropForm" novalidate>
+            <div class="field" id="f-name">
+              <label for="name">Your name</label>
+              <div class="input"><svg><use href="#i-user"/></svg>
+                <input id="name" name="name" type="text" placeholder="Full name" autocomplete="name" />
+              </div>
+              <div class="err">Please enter your name.</div>
+            </div>
+
+            <div class="field" id="f-phone">
+              <label for="phone">Phone number (WhatsApp)</label>
+              <div class="input"><svg style="color:#25d366"><use href="#i-wa"/></svg>
+                <span class="prefix">+91</span>
+                <input id="phone" name="phone" type="tel" inputmode="numeric" maxlength="10" placeholder="10-digit mobile number" autocomplete="tel-national" />
+              </div>
+              <div class="err">Enter a valid 10-digit mobile number.</div>
+            </div>
+
+            <button class="btn" type="submit" id="openBtn">
+              <span class="lockring"><svg><use href="#i-lock"/></svg></span>
+              <span class="label">Open Compartment</span>
+              <span class="arrow"><svg><use href="#i-arrow"/></svg></span>
+              <span class="spinner"></span>
+            </button>
+
+            <div class="secure"><svg><use href="#i-shield"/></svg> Your information is safe and secure</div>
+          </form>
+
+          <!-- steps -->
+          <div class="steps">
+            <div class="step"><span class="num">1</span><span class="sic"><svg><use href="#i-clipboard"/></svg></span><h4>Enter Details</h4><p>Provide your name and WhatsApp</p></div>
+            <div class="step"><span class="num">2</span><span class="sic"><svg><use href="#i-lock"/></svg></span><h4>Open Locker</h4><p>We'll unlock the compartment</p></div>
+            <div class="step"><span class="num">3</span><span class="sic"><svg><use href="#i-shirt"/></svg></span><h4>Drop &amp; Close</h4><p>Drop your clothes and close the door</p></div>
+          </div>
+
+          <!-- success view -->
+          <div class="success" id="successView">
+            <div class="tick"><svg><use href="#i-check"/></svg></div>
+            <h2>Compartment Open</h2>
+            <p>Please drop your clothes inside and firmly close the door. We've sent a confirmation to your WhatsApp.</p>
+            <button class="again" id="againBtn" type="button">Drop for someone else</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- LEFT-LOWER: features + whatsapp -->
+      <section class="col-features">
+        <div class="features">
+          <div class="feature"><span class="fi"><svg><use href="#i-shield"/></svg></span><div><h3>Secure &amp; Reliable</h3><p>Your items are safe with smart locker technology</p></div></div>
+          <div class="feature"><span class="fi"><svg><use href="#i-clock"/></svg></span><div><h3>24×7 Available</h3><p>Access the locker anytime you need</p></div></div>
+          <div class="feature"><span class="fi"><svg><use href="#i-bubbles"/></svg></span><div><h3>Clean &amp; Hygienic</h3><p>Professionally cleaned with care &amp; perfection</p></div></div>
+          <div class="feature"><span class="fi"><svg><use href="#i-leaf"/></svg></span><div><h3>Eco Friendly</h3><p>Sustainable cleaning for a better tomorrow</p></div></div>
+        </div>
+
+        <div class="wa-help">
+          <span class="wa-ic"><svg><use href="#i-wa"/></svg></span>
+          <div class="wa-t"><small>Need help?</small><b>Chat with us on WhatsApp</b>
+            <a href="https://wa.me/917306332548" target="_blank" rel="noopener">+91 73063 32548</a>
+          </div>
+        </div>
+      </section>
+
+      <!-- RIGHT: decorative locker -->
+      <aside class="col-locker">
+        <div class="locker">
+          <span class="tag" id="lockerTag">LOCKER 1</span>
+          <div class="door"></div>
+          <div class="seam s1"></div>
+          <div class="glow"><svg><use href="#i-lock"/></svg></div>
+        </div>
+      </aside>
+
+    </div>
+
+    <!-- trust strip -->
+    <div class="trust">
+      <div class="t"><svg><use href="#i-shield"/></svg><div><b>Trusted Service</b><small>Quality you can count on</small></div></div>
+      <div class="t"><svg><use href="#i-lock"/></svg><div><b>Contactless Drop-off</b><small>Safe, easy and quick</small></div></div>
+      <div class="t"><svg><use href="#i-sparkle"/></svg><div><b>Spotless Care</b><small>We clean, you relax</small></div></div>
+      <div class="t"><svg><use href="#i-heart"/></svg><div><b>Made with Care</b><small>For you &amp; your clothes</small></div></div>
+    </div>
+
+    <footer>
+      <p class="thanks">Thank you for choosing Purewash Laundry Services.</p>
+      <p class="script">We clean it like it's our own.</p>
+    </footer>
+
+  </div>
+
+<script>
+  /* ============================================================
+     CONFIG — the only part you normally touch
+     ============================================================ */
+  const CONFIG = {
+    // Which locker this page controls. In Flask, render this template with
+    // locker_id and replace the line below with:  lockerId: "{{ locker_id }}",
+    lockerId: "locker1",
+
+    // Your Flask route that records the drop-off and tells the ESP32 to unlock.
+    // It should accept POST JSON { name, phone, locker_id } and return JSON.
+    openEndpoint: "/api/open",
+
+    // Keep TRUE only while there is no backend (e.g. this preview). It fakes a
+    // successful unlock so you can see the flow. SET TO false before going live.
+    demoMode: true
+  };
+
+  /* ---------- wire up the locker id in the UI ---------- */
+  document.getElementById('lockerLabel').textContent = CONFIG.lockerId;
+  const niceTag = CONFIG.lockerId.replace(/([a-z]+)(\d+)/i, '$1 $2').toUpperCase();
+  document.getElementById('lockerTag').textContent = niceTag;
+
+  const form   = document.getElementById('dropForm');
+  const card   = document.getElementById('card');
+  const btn    = document.getElementById('openBtn');
+  const nameEl = document.getElementById('name');
+  const phoneEl= document.getElementById('phone');
+  const fName  = document.getElementById('f-name');
+  const fPhone = document.getElementById('f-phone');
+
+  // phone: digits only
+  phoneEl.addEventListener('input', () => { phoneEl.value = phoneEl.value.replace(/\D/g,'').slice(0,10); });
+  [nameEl, phoneEl].forEach(el => el.addEventListener('input', () => {
+    el === nameEl ? fName.classList.remove('invalid') : fPhone.classList.remove('invalid');
+  }));
+
+  function setLoading(on){
+    btn.disabled = on;
+    btn.querySelector('.label').textContent = on ? 'Opening…' : 'Open Compartment';
+    btn.querySelector('.arrow').style.display   = on ? 'none' : '';
+    btn.querySelector('.spinner').style.display = on ? 'block' : 'none';
+  }
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name  = nameEl.value.trim();
+    const phone = phoneEl.value.trim();
+
+    let ok = true;
+    if(!name){ fName.classList.add('invalid'); ok = false; }
+    if(phone.length !== 10){ fPhone.classList.add('invalid'); ok = false; }
+    if(!ok) return;
+
+    setLoading(true);
+
+    try{
+      if(CONFIG.demoMode){
+        await new Promise(r => setTimeout(r, 1100));   // pretend the locker opens
+      } else {
+        const res = await fetch(CONFIG.openEndpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, phone, locker_id: CONFIG.lockerId })
+        });
+        if(!res.ok) throw new Error('Server said ' + res.status);
+        // const data = await res.json();  // use if your backend returns details
+      }
+      card.classList.add('done');          // reveal success view
+    } catch(err){
+      setLoading(false);
+      fPhone.classList.remove('invalid');
+      alert("Couldn't open the locker just now. Please try again, or use the WhatsApp help number.");
+      console.error(err);
+    }
+  });
+
+  document.getElementById('againBtn').addEventListener('click', () => {
+    form.reset();
+    setLoading(false);
+    card.classList.remove('done');
+  });
+</script>
+</body>
+</html>
