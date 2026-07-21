@@ -84,7 +84,7 @@ def init_db():
     """)
     con.commit()
     con.close()
-
+init_db()
 # ----------------------------------------------------------------------
 # NOTIFICATIONS
 # ----------------------------------------------------------------------
@@ -144,7 +144,7 @@ def home():
 
 @app.route("/locker/<locker_id>")
 def locker_page(locker_id):
-    return render_template("index.html", locker_id=locker_id)
+    return render_template("drop_off.html", locker_id=locker_id)
 
 # ----------------------------------------------------------------------
 # API
