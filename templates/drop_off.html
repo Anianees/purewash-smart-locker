@@ -401,15 +401,15 @@
   const CONFIG = {
     // Which locker this page controls. In Flask, render this template with
     // locker_id and replace the line below with:  lockerId: "{{ locker_id }}",
-    lockerId: "locker1",
+    lockerId: "{{ locker_id }}",
 
     // Your Flask route that records the drop-off and tells the ESP32 to unlock.
     // It should accept POST JSON { name, phone, locker_id } and return JSON.
-    openEndpoint: "/api/open",
+    openEndpoint: "/api/dropoff",
 
     // Keep TRUE only while there is no backend (e.g. this preview). It fakes a
     // successful unlock so you can see the flow. SET TO false before going live.
-    demoMode: true
+    demoMode: false
   };
 
   /* ---------- wire up the locker id in the UI ---------- */
