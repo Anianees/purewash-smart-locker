@@ -46,7 +46,7 @@ WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN", "")
 WHATSAPP_PHONE_ID = os.environ.get("WHATSAPP_PHONE_ID", "")
 
 # Unlock flag expires after this many seconds if the ESP32 doesn't claim it
-UNLOCK_FLAG_TTL = 30
+UNLOCK_FLAG_TTL = 120
 
 # ----------------------------------------------------------------------
 # DATABASE
