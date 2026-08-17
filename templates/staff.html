@@ -1,0 +1,148 @@
+<!DOCTYPE html><html lang="en"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Purewash Staff — Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root{--teal:#0e8f83;--teal-deep:#0a6f6c;--teal-bright:#12a594;--navy:#163455;--ink:#3f5566;--muted:#6d8494;--line:#e6eef1;}
+  *{box-sizing:border-box;margin:0;padding:0;font-family:'Poppins',system-ui,sans-serif;}
+  body{background:#eef4f7;color:var(--ink);padding:0 0 40px;}
+  header{background:linear-gradient(160deg,#163455,#0e3140);color:#fff;padding:18px 20px;display:flex;align-items:center;justify-content:space-between;}
+  header .t{display:flex;align-items:center;gap:12px;}
+  header .lg{width:40px;height:40px;border-radius:12px;background:linear-gradient(150deg,#0c7c78,#10a08e);display:grid;place-items:center;}
+  header .lg svg{width:22px;height:22px;color:#fff;}
+  header h1{font-size:1.1rem;} header a{color:#bcd6d3;font-size:.85rem;text-decoration:none;}
+  .wrap{max-width:900px;margin:0 auto;padding:20px;}
+
+  .comp-strip{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:22px;}
+  .cs{background:#fff;border-radius:12px;padding:12px 4px;text-align:center;border:1.5px solid var(--line);}
+  .cs .n{font-size:1.2rem;font-weight:700;color:var(--navy);}
+  .cs .s{font-size:.62rem;font-weight:600;margin-top:2px;}
+  .cs.free .s{color:var(--teal-deep);} .cs.dirty{background:#fff4ec;border-color:#f0c9a8;} .cs.dirty .s{color:#c47a2c;}
+  .cs.clean{background:#eafaf7;border-color:#a8e0d5;} .cs.clean .s{color:var(--teal-deep);}
+
+  h2.sec{font-size:.95rem;color:var(--navy);margin:6px 0 12px;}
+  .order{background:#fff;border-radius:16px;padding:16px 18px;margin-bottom:12px;box-shadow:0 10px 26px -20px rgba(14,49,64,.5);}
+  .order .top{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;}
+  .order .who{font-weight:600;color:var(--navy);} .order .ph{font-size:.82rem;color:var(--muted);}
+  .badge{font-size:.68rem;font-weight:700;padding:4px 10px;border-radius:20px;white-space:nowrap;}
+  .b-DROPPED{background:#fff4ec;color:#c47a2c;} .b-COLLECTED{background:#eaf2ff;color:#3b6fb0;}
+  .b-WASHING{background:#f0ecff;color:#7159c1;} .b-READY{background:#e9f9ef;color:#1a9d5a;}
+  .b-RETURNED{background:#eafaf7;color:#0a6f6c;}
+  .order .meta{font-size:.78rem;color:var(--muted);margin-top:4px;}
+  .actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;}
+  .actions button{border:none;border-radius:10px;padding:10px 14px;font-size:.82rem;font-weight:600;cursor:pointer;}
+  .a-primary{background:linear-gradient(135deg,#0c7c78,#10a08e);color:#fff;}
+  .a-soft{background:#eef4f7;color:var(--navy);border:1px solid var(--line)!important;}
+  .empty{text-align:center;color:var(--muted);padding:30px;font-size:.9rem;}
+
+  .modal{position:fixed;inset:0;background:rgba(14,49,64,.5);display:none;place-items:center;padding:20px;z-index:50;}
+  .modal.show{display:grid;}
+  .modal .box{background:#fff;border-radius:18px;padding:24px;max-width:380px;width:100%;}
+  .modal h3{color:var(--navy);margin-bottom:6px;} .modal p{font-size:.85rem;color:var(--muted);margin-bottom:16px;}
+  .free-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:16px;}
+  .fc{border:1.5px solid var(--line);border-radius:12px;padding:16px 4px;text-align:center;cursor:pointer;font-weight:700;color:var(--navy);}
+  .fc.sel{border-color:var(--teal-bright);background:#eafaf7;box-shadow:0 0 0 3px rgba(18,165,148,.15);}
+  .modal .row{display:flex;gap:10px;} .modal .row button{flex:1;padding:12px;border-radius:10px;font-weight:600;border:none;cursor:pointer;}
+</style></head><body>
+  <header>
+    <div class="t"><span class="lg"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20.38 3.46 16 2a4 4 0 0 1-8 0L3.62 3.46a2 2 0 0 0-1.34 2.23l.58 3.47a1 1 0 0 0 .99.84H6v10c0 1.1.9 2 2 2h8a2 2 0 0 0 2-2V10h2.15a1 1 0 0 0 .99-.84l.58-3.47a2 2 0 0 0-1.34-2.23z"/></svg></span>
+      <h1>Purewash Staff</h1></div>
+    <a href="/staff/logout">Sign out</a>
+  </header>
+
+  <div class="wrap">
+    <div class="comp-strip" id="compStrip"></div>
+    <h2 class="sec">Active Orders</h2>
+    <div id="orders"></div>
+  </div>
+
+  <!-- return modal -->
+  <div class="modal" id="returnModal">
+    <div class="box">
+      <h3>Return clean laundry</h3>
+      <p>Choose a free compartment to place the clean laundry in. The door will open.</p>
+      <div class="free-grid" id="freeGrid"></div>
+      <div class="row">
+        <button class="a-soft" onclick="closeModal()">Cancel</button>
+        <button class="a-primary" onclick="confirmReturn()">Open &amp; Return</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+const LOCKER="locker1"; let currentOrder=null, chosenFree=null;
+const $=id=>document.getElementById(id);
+
+async function load(){
+  const [ords, comps] = await Promise.all([
+    fetch('/staff/api/orders').then(r=>r.json()),
+    fetch('/staff/api/compartments?locker_id='+LOCKER).then(r=>r.json())
+  ]);
+  renderComps(comps); renderOrders(ords, comps);
+}
+
+function renderComps(comps){
+  $('compStrip').innerHTML = comps.map(c=>{
+    const cls = !c.occupied?'free':(c.kind==='CLEAN'?'clean':'dirty');
+    const s = !c.occupied?'Free':(c.kind==='CLEAN'?'Clean':'Dirty');
+    return `<div class="cs ${cls}"><div class="n">${c.compartment}</div><div class="s">${s}</div></div>`;
+  }).join('');
+}
+
+function renderOrders(ords, comps){
+  if(!ords.length){ $('orders').innerHTML='<div class="empty">No active orders right now.</div>'; return; }
+  $('orders').innerHTML = ords.map(o=>{
+    let actions='';
+    if(o.status==='DROPPED')
+      actions=`<button class="a-primary" onclick="collect(${o.id})">Open &amp; Collect (Comp ${o.drop_compartment})</button>`;
+    else if(o.status==='COLLECTED')
+      actions=`<button class="a-soft" onclick="setStatus(${o.id},'WASHING')">Mark Washing</button>`;
+    else if(o.status==='WASHING')
+      actions=`<button class="a-soft" onclick="setStatus(${o.id},'READY')">Mark Ready</button>
+               <button class="a-primary" onclick="openReturn(${o.id})">Return Clean</button>`;
+    else if(o.status==='READY')
+      actions=`<button class="a-primary" onclick="openReturn(${o.id})">Return Clean</button>`;
+    else if(o.status==='RETURNED')
+      actions=`<span class="meta">Waiting for customer pickup — Comp ${o.return_compartment}</span>`;
+    const comp = o.status==='RETURNED'? o.return_compartment : o.drop_compartment;
+    return `<div class="order">
+      <div class="top">
+        <div><div class="who">${o.customer_name}</div><div class="ph">+91 ${o.customer_phone}</div>
+        <div class="meta">Order #${o.id}${comp?` · Compartment ${comp}`:''}</div></div>
+        <span class="badge b-${o.status}">${o.status}</span>
+      </div>
+      <div class="actions">${actions}</div>
+    </div>`;
+  }).join('');
+}
+
+async function collect(id){
+  if(!confirm('Open the compartment and collect this laundry for washing?')) return;
+  const r=await fetch('/staff/api/collect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order_id:id})});
+  const d=await r.json(); if(!d.ok){alert(d.error);return;}
+  alert('Compartment '+d.opened+' opening. Collect the laundry.'); load();
+}
+async function setStatus(id,st){
+  const r=await fetch('/staff/api/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order_id:id,status:st})});
+  const d=await r.json(); if(!d.ok){alert(d.error);return;} load();
+}
+async function openReturn(id){
+  currentOrder=id; chosenFree=null;
+  const comps=await fetch('/staff/api/compartments?locker_id='+LOCKER).then(r=>r.json());
+  const free=comps.filter(c=>!c.occupied);
+  if(!free.length){alert('No free compartments right now.');return;}
+  $('freeGrid').innerHTML=free.map(c=>`<div class="fc" data-c="${c.compartment}" onclick="pickFree(this)">${c.compartment}</div>`).join('');
+  $('returnModal').classList.add('show');
+}
+function pickFree(el){document.querySelectorAll('.fc').forEach(x=>x.classList.remove('sel'));el.classList.add('sel');chosenFree=+el.dataset.c;}
+function closeModal(){$('returnModal').classList.remove('show');}
+async function confirmReturn(){
+  if(!chosenFree){alert('Pick a free compartment.');return;}
+  const r=await fetch('/staff/api/return',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order_id:currentOrder,compartment:chosenFree})});
+  const d=await r.json(); if(!d.ok){alert(d.error);return;}
+  closeModal(); alert('Compartment '+d.opened+' opening. Place the clean laundry and close.'); load();
+}
+
+load(); setInterval(load, 5000);   // auto-refresh every 5s
+</script>
+</body></html>
