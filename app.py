@@ -38,7 +38,7 @@ WHATSAPP_PHONE_ID      = os.environ.get("WHATSAPP_PHONE_ID", "")
 STAFF_PASSWORD = os.environ.get("STAFF_PASSWORD", "purewash123")
 
 UNLOCK_FLAG_TTL  = 120
-NUM_COMPARTMENTS = 6
+NUM_COMPARTMENTS = 7
 
 # ---------------- DB ----------------
 def get_db():
