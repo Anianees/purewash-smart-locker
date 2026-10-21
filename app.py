@@ -1,5 +1,5 @@
 """
-Purewash Smart Locker - Backend (6-Compartment, Full Lifecycle)
+Purewash Smart Locker - Backend (7-Compartment, Full Lifecycle)
 ---------------------------------------------------------------
 Customer flow:  drop-off / pick-up  (via /locker/<id>)
 Staff flow:     collect, mark washing/ready, return clean laundry  (via /staff)
@@ -12,7 +12,7 @@ Order lifecycle:
   RETURNED    - staff placed clean laundry back in a compartment (occupied)
   PICKED_UP   - customer collected clean laundry (compartment freed)
 
-Compartments free up at every handoff, so 6 boxes serve many customers.
+Compartments free up at every handoff, so 7 boxes serve many customers.
 
 Hardware: ESP32 polls /api/check-unlock?device=locker1, opens the compartment
 the flag names, then reports /api/door-latched.
@@ -388,7 +388,14 @@ def staff_open_comp():
     set_unlock(locker_id, comp, -1)
     return jsonify(ok=True, opened=comp)
 
+# ---------------- WhatsApp webhook (whatsapp_webhook.py) ----------------
+from whatsapp_webhook import wa_bp
+app.register_blueprint(wa_bp)
+
 # ---------------- run ----------------
 if __name__ == "__main__":
     init_db()
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT",5000)), debug=True)
+    # Debug mode exposes Flask's interactive debugger to the internet; keep it off on Render.
+    # Set FLASK_DEBUG=1 only when testing on your own computer.
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT",5000)),
+            debug=os.environ.get("FLASK_DEBUG") == "1")
