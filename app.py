@@ -33,6 +33,8 @@ TELEGRAM_BOT_TOKEN     = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_STAFF_CHAT_ID = os.environ.get("TELEGRAM_STAFF_CHAT_ID", "")
 WHATSAPP_TOKEN         = os.environ.get("WHATSAPP_TOKEN", "")
 WHATSAPP_PHONE_ID      = os.environ.get("WHATSAPP_PHONE_ID", "")
+WHATSAPP_API_VERSION   = os.environ.get("WHATSAPP_API_VERSION", "v25.0")
+WHATSAPP_TEMPLATE_LANG = os.environ.get("WHATSAPP_TEMPLATE_LANG", "en")  # template language "English" = en
 
 # Staff portal password (set STAFF_PASSWORD in Render; fallback works immediately)
 STAFF_PASSWORD = os.environ.get("STAFF_PASSWORD", "purewash123")
@@ -104,16 +106,46 @@ def notify_staff(text):
     except Exception as e:
         print("Telegram failed:", e)
 
-def notify_customer(phone, message):
+def notify_customer(phone, template, params, summary):
+    """Send an approved WhatsApp template to a customer.
+
+    template: template name in WhatsApp Manager (e.g. "laundry_ready")
+    params:   values for {{1}}, {{2}}, ... in order
+    summary:  plain-language version, used in the staff alert if sending fails
+    """
     if not WHATSAPP_TOKEN or not WHATSAPP_PHONE_ID:
-        print(f"[whatsapp -> {phone}] {message}"); return
+        print(f"[whatsapp -> {phone}] {template} {params}"); return
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": f"91{phone}",
+        "type": "template",
+        "template": {
+            "name": template,
+            "language": {"code": WHATSAPP_TEMPLATE_LANG},
+            "components": [{
+                "type": "body",
+                "parameters": [{"type": "text", "text": str(v).strip() or "-"} for v in params],
+            }],
+        },
+    }
     try:
-        requests.post(f"https://graph.facebook.com/v19.0/{WHATSAPP_PHONE_ID}/messages",
-                      headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"},
-                      json={"messaging_product":"whatsapp","to":f"91{phone}",
-                            "type":"text","text":{"body":message}}, timeout=8)
+        r = requests.post(f"https://graph.facebook.com/{WHATSAPP_API_VERSION}/{WHATSAPP_PHONE_ID}/messages",
+                          headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"},
+                          json=payload, timeout=8)
+        if r.ok:
+            return
+        try:
+            err = r.json().get("error", {})
+            reason = err.get("error_user_msg") or err.get("message") or r.text[:200]
+        except ValueError:
+            reason = r.text[:200]
+        print("WhatsApp send failed:", r.status_code, r.text[:500])
     except Exception as e:
-        print("WhatsApp failed:", e)
+        reason = str(e)
+        print("WhatsApp send failed:", e)
+    # Customer did not get the message -> tell staff so they can inform them manually
+    notify_staff(f"⚠️ WhatsApp '{template}' to {phone} FAILED: {reason}\n"
+                 f"Please inform the customer manually: {summary}")
 
 # ---------------- HELPERS ----------------
 def set_unlock(locker_id, compartment, order_id):
@@ -248,9 +280,9 @@ def door_latched():
         notify_staff(f"NEW DROP-OFF · Locker {locker_id} · Compartment {comp}\n"
                      f"{dropped['customer_name']} · {dropped['customer_phone']}\n"
                      f"Order #{dropped['id']} — please collect for washing.")
-        notify_customer(dropped["customer_phone"],
-                        f"Hi {dropped['customer_name']}! Purewash has received your laundry in compartment {comp}. "
-                        f"We'll pick it up for washing shortly.")
+        notify_customer(dropped["customer_phone"], "laundry_received",
+                        [dropped["customer_name"], comp],
+                        f"laundry received in compartment {comp} (order #{dropped['id']})")
         return jsonify(ok=True)
 
     # A RETURN just closed -> mark compartment occupied (clean), WhatsApp customer it's ready
@@ -260,9 +292,9 @@ def door_latched():
         db.execute("UPDATE compartments SET occupied=1, order_id=?, kind='CLEAN' WHERE locker_id=? AND compartment=?",
                    (returning["id"], locker_id, comp))
         db.commit()
-        notify_customer(returning["customer_phone"],
-                        f"Hi {returning['customer_name']}! Your clean laundry is ready to pick up in "
-                        f"compartment {comp} at the Purewash locker.")
+        notify_customer(returning["customer_phone"], "laundry_ready",
+                        [returning["customer_name"], returning["id"]],
+                        f"order #{returning['id']} is ready for pickup in compartment {comp}")
         return jsonify(ok=True)
 
     return jsonify(ok=True, note="no matching open step")
@@ -335,9 +367,9 @@ def staff_collect():
     db.execute("UPDATE compartments SET occupied=0, order_id=NULL, kind=NULL WHERE locker_id=? AND compartment=?",
                (order["locker_id"], comp))
     db.commit()
-    notify_customer(order["customer_phone"],
-                    f"Hi {order['customer_name']}! Your laundry has been picked up from compartment {comp} "
-                    f"and is on its way for washing.")
+    notify_customer(order["customer_phone"], "laundry_collected",
+                    [order["customer_name"], comp],
+                    f"laundry collected from compartment {comp} for washing (order #{order['id']})")
     return jsonify(ok=True, opened=comp)
 
 @app.route("/staff/api/status", methods=["POST"])
