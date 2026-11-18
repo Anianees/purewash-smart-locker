@@ -18,7 +18,7 @@ Hardware: ESP32 polls /api/check-unlock?device=locker1, opens the compartment
 the flag names, then reports /api/door-latched.
 """
 
-import sqlite3, time, os
+import sqlite3, time, os, threading
 from functools import wraps
 from flask import (Flask, request, jsonify, render_template,
                    redirect, session, g, url_for)
@@ -27,6 +27,15 @@ import requests
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "purewash-secret-change-me")
 DB_PATH = os.environ.get("DB_PATH", "purewash.db")
+
+# If DATABASE_URL is set (Neon Postgres), orders are stored there and survive
+# every deploy/restart. Without it, the app falls back to the local SQLite file
+# (fine for testing on your own computer, but wiped on every Render deploy).
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+USE_PG = DATABASE_URL.startswith(("postgres://", "postgresql://"))
+if USE_PG:
+    import psycopg
+    from psycopg.rows import dict_row
 
 # ---------------- CONFIG ----------------
 TELEGRAM_BOT_TOKEN     = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -43,24 +52,42 @@ UNLOCK_FLAG_TTL  = 120
 NUM_COMPARTMENTS = 7
 
 # ---------------- DB ----------------
+class _PgDB:
+    """Small wrapper so the rest of the code can keep using db.execute("... ?", params)."""
+    def __init__(self):
+        self.con = psycopg.connect(DATABASE_URL, row_factory=dict_row, connect_timeout=15)
+    def execute(self, sql, params=()):
+        return self.con.execute(sql.replace("?", "%s"), params)
+    def commit(self):
+        self.con.commit()
+    def close(self):
+        self.con.close()
+
+def _connect():
+    if USE_PG:
+        return _PgDB()
+    con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row
+    return con
+
 def get_db():
     db = getattr(g, "_db", None)
     if db is None:
-        db = g._db = sqlite3.connect(DB_PATH)
-        db.row_factory = sqlite3.Row
+        db = g._db = _connect()
     return db
 
 @app.teardown_appcontext
 def close_db(exc):
-    db = getattr(g, "_db", None)
+    db = g.pop("_db", None)
     if db is not None:
         db.close()
 
 def init_db():
-    con = sqlite3.connect(DB_PATH)
-    con.executescript("""
+    id_col = "SERIAL PRIMARY KEY" if USE_PG else "INTEGER PRIMARY KEY AUTOINCREMENT"
+    con = _connect()
+    for stmt in (f"""
     CREATE TABLE IF NOT EXISTS orders (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id {id_col},
         locker_id TEXT NOT NULL,
         drop_compartment INTEGER,
         return_compartment INTEGER,
@@ -69,28 +96,24 @@ def init_db():
         status TEXT NOT NULL DEFAULT 'DROPPED',
         created_at INTEGER NOT NULL,
         updated_at INTEGER
-    );
+    )""", """
     CREATE TABLE IF NOT EXISTS compartments (
         locker_id TEXT NOT NULL,
         compartment INTEGER NOT NULL,
         occupied INTEGER NOT NULL DEFAULT 0,
         order_id INTEGER,
-        kind TEXT,                 -- 'DIRTY' or 'CLEAN'
+        kind TEXT,
         PRIMARY KEY (locker_id, compartment)
-    );
-    CREATE TABLE IF NOT EXISTS unlock_flags (
-        locker_id TEXT PRIMARY KEY,
-        compartment INTEGER,
-        order_id INTEGER,
-        set_at INTEGER
-    );
-    """)
+    )"""):
+        con.execute(stmt)
     con.commit(); con.close()
+    print("Database:", "Postgres (DATABASE_URL)" if USE_PG else f"SQLite file {DB_PATH}")
 
 def ensure_compartments(locker_id):
     db = get_db()
     for c in range(1, NUM_COMPARTMENTS + 1):
-        db.execute("INSERT OR IGNORE INTO compartments (locker_id, compartment, occupied) VALUES (?,?,0)",
+        db.execute("""INSERT INTO compartments (locker_id, compartment, occupied) VALUES (?,?,0)
+                      ON CONFLICT (locker_id, compartment) DO NOTHING""",
                    (locker_id, c))
     db.commit()
 
@@ -148,14 +171,17 @@ def notify_customer(phone, template, params, summary):
                  f"Please inform the customer manually: {summary}")
 
 # ---------------- HELPERS ----------------
+# Pending "open this door" commands for the ESP32. Kept in memory, not in the
+# database: the ESP32 polls every few seconds, and a command only lives 2 minutes,
+# so there is nothing worth keeping across a restart. This also lets the free
+# Postgres database sleep when nobody is using the locker.
+_unlock_flags = {}
+_unlock_lock = threading.Lock()
+
 def set_unlock(locker_id, compartment, order_id):
-    db = get_db()
-    db.execute("""INSERT INTO unlock_flags (locker_id, compartment, order_id, set_at)
-                  VALUES (?,?,?,?)
-                  ON CONFLICT(locker_id) DO UPDATE SET
-                  compartment=excluded.compartment, order_id=excluded.order_id, set_at=excluded.set_at""",
-               (locker_id, compartment, order_id, int(time.time())))
-    db.commit()
+    with _unlock_lock:
+        _unlock_flags[locker_id] = {"compartment": compartment, "order_id": order_id,
+                                    "set_at": int(time.time())}
 
 def free_compartments(locker_id):
     db = get_db()
@@ -219,9 +245,9 @@ def open_compartment():
         if comp["occupied"] == 1:
             return jsonify(ok=False, error="That compartment was just taken. Pick another."), 409
         cur = db.execute("""INSERT INTO orders (locker_id, drop_compartment, customer_name, customer_phone,
-                            status, created_at) VALUES (?,?,?,?, 'DROPPED', ?)""",
+                            status, created_at) VALUES (?,?,?,?, 'DROPPED', ?) RETURNING id""",
                          (locker_id, compartment, name, phone, int(time.time())))
-        order_id = cur.lastrowid
+        order_id = cur.fetchone()["id"]
         db.commit()
         set_unlock(locker_id, compartment, order_id)
         return jsonify(ok=True, order_id=order_id, compartment=compartment)
@@ -235,6 +261,14 @@ def open_compartment():
         if not order:
             return jsonify(ok=False, error="No ready laundry found for you in that compartment."), 403
         set_unlock(locker_id, compartment, order["id"])
+        # Customer is collecting -> close the order and free the compartment
+        db.execute("UPDATE orders SET status='PICKED_UP', updated_at=? WHERE id=?",
+                   (int(time.time()), order["id"]))
+        db.execute("UPDATE compartments SET occupied=0, order_id=NULL, kind=NULL WHERE locker_id=? AND compartment=?",
+                   (locker_id, compartment))
+        db.commit()
+        notify_staff(f"PICKED UP · Locker {locker_id} · Compartment {compartment}\n"
+                     f"{order['customer_name']} · Order #{order['id']} complete.")
         return jsonify(ok=True, order_id=order["id"], compartment=compartment)
 
     return jsonify(ok=False, error="Invalid action."), 400
@@ -243,12 +277,9 @@ def open_compartment():
 @app.route("/api/check-unlock")
 def check_unlock():
     locker_id = request.args.get("device","")
-    db = get_db()
-    row = db.execute("SELECT compartment, order_id, set_at FROM unlock_flags WHERE locker_id=?",
-                     (locker_id,)).fetchone()
+    with _unlock_lock:
+        row = _unlock_flags.pop(locker_id, None)
     if row and (int(time.time()) - row["set_at"]) <= UNLOCK_FLAG_TTL:
-        db.execute("DELETE FROM unlock_flags WHERE locker_id=?", (locker_id,))
-        db.commit()
         return jsonify(unlock=True, compartment=row["compartment"], order_id=row["order_id"])
     return jsonify(unlock=False)
 
