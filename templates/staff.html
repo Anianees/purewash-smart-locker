@@ -43,6 +43,13 @@
   .fc{border:1.5px solid var(--line);border-radius:12px;padding:16px 4px;text-align:center;cursor:pointer;font-weight:700;color:var(--navy);}
   .fc.sel{border-color:var(--teal-bright);background:#eafaf7;box-shadow:0 0 0 3px rgba(18,165,148,.15);}
   .modal .row{display:flex;gap:10px;} .modal .row button{flex:1;padding:12px;border-radius:10px;font-weight:600;border:none;cursor:pointer;}
+  .info{font-size:.78rem;color:var(--ink);margin-top:6px;display:flex;flex-wrap:wrap;gap:6px}
+  .chip{background:#eef4f7;border-radius:8px;padding:3px 8px}.chip.warn{background:#fff4ec;color:#c47a2c;font-weight:600}.chip.amt{background:#e9f9ef;color:#1a9d5a;font-weight:700}
+  .modal label{display:block;font-size:.78rem;font-weight:600;color:var(--navy);margin:10px 0 4px}
+  .modal input,.modal select{width:100%;padding:10px 12px;border:1.5px solid var(--line);border-radius:10px;font:inherit;font-size:.9rem}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .preview{margin:14px 0;padding:12px;border-radius:12px;background:#f1fbf9;text-align:center;color:var(--navy);font-size:.85rem}.preview b{font-size:1.2rem;color:var(--teal-deep)}
+  .hint{font-size:.72rem;color:var(--muted);margin-top:4px}
 </style></head><body>
   <header>
     <div class="t"><span class="lg"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20.38 3.46 16 2a4 4 0 0 1-8 0L3.62 3.46a2 2 0 0 0-1.34 2.23l.58 3.47a1 1 0 0 0 .99.84H6v10c0 1.1.9 2 2 2h8a2 2 0 0 0 2-2V10h2.15a1 1 0 0 0 .99-.84l.58-3.47a2 2 0 0 0-1.34-2.23z"/></svg></span>
@@ -69,7 +76,33 @@
     </div>
   </div>
 
+  <!-- count & price modal -->
+  <div class="modal" id="assessModal">
+    <div class="box">
+      <h3>Count &amp; price</h3>
+      <p id="as-cust"></p>
+      <label>Service</label><select id="as-svc" onchange="previewPrice()"></select>
+      <div class="two">
+        <div><label>Items counted</label><input id="as-count" type="number" min="1" inputmode="numeric" oninput="previewPrice()"></div>
+        <div><label>Weight (kg)</label><input id="as-kg" type="number" step="0.1" min="0" inputmode="decimal" placeholder="optional" oninput="previewPrice()"></div>
+      </div>
+      <div class="hint">2 kg or more → per-kg rate. Under 2 kg (or no weight) → per piece.</div>
+      <div class="two">
+        <div><label>Special care extra (₹)</label><input id="as-extra" type="number" min="0" inputmode="numeric" placeholder="0" oninput="previewPrice()"></div>
+        <div><label>Note</label><input id="as-note" maxlength="200" placeholder="e.g. silk saree"></div>
+      </div>
+      <div class="preview" id="as-preview"></div>
+      <div class="row">
+        <button class="a-soft" onclick="closeAssess()">Cancel</button>
+        <button class="a-primary" onclick="saveAssess()">Save &amp; send to customer</button>
+      </div>
+    </div>
+  </div>
+
 <script>
+let PRICES=null, ORDERS=[], assessId=null;
+fetch('/api/prices').then(r=>r.json()).then(p=>{PRICES=p;});
+const svcLabel=c=>(PRICES&&PRICES.services.find(s=>s.code===c)||{}).label||'—';
 const LOCKER="locker1"; let currentOrder=null, chosenFree=null;
 const $=id=>document.getElementById(id);
 
@@ -78,7 +111,7 @@ async function load(){
     fetch('/staff/api/orders').then(r=>r.json()),
     fetch('/staff/api/compartments?locker_id='+LOCKER).then(r=>r.json())
   ]);
-  renderComps(comps); renderOrders(ords, comps);
+  ORDERS=ords; renderComps(comps); renderOrders(ords, comps);
 }
 
 function renderComps(comps){
@@ -96,7 +129,10 @@ function renderOrders(ords, comps){
     if(o.status==='DROPPED')
       actions=`<button class="a-primary" onclick="collect(${o.id})">Open &amp; Collect (Comp ${o.drop_compartment})</button>`;
     else if(o.status==='COLLECTED')
-      actions=`<button class="a-soft" onclick="setStatus(${o.id},'WASHING')">Mark Washing</button>`;
+      actions= o.amount==null
+        ? `<button class="a-primary" onclick="openAssess(${o.id})">Count &amp; Price</button>`
+        : `<button class="a-soft" onclick="openAssess(${o.id})">Edit price</button>
+           <button class="a-primary" onclick="setStatus(${o.id},'WASHING')">Mark Washing</button>`;
     else if(o.status==='WASHING')
       actions=`<button class="a-soft" onclick="setStatus(${o.id},'READY')">Mark Ready</button>
                <button class="a-primary" onclick="openReturn(${o.id})">Return Clean</button>`;
@@ -105,12 +141,21 @@ function renderOrders(ords, comps){
     else if(o.status==='RETURNED')
       actions=`<span class="meta">Waiting for customer pickup — Comp ${o.return_compartment}</span>`;
     const comp = o.status==='RETURNED'? o.return_compartment : o.drop_compartment;
+    const mism = o.staff_count!=null && o.item_count!=null && o.staff_count!==o.item_count;
+    const chips = [
+      o.service?`<span class="chip">${svcLabel(o.service)}</span>`:'',
+      o.item_count?`<span class="chip">Customer: ${o.item_count} items</span>`:'',
+      o.staff_count!=null?`<span class="chip ${mism?'warn':''}">Counted: ${o.staff_count}${o.weight_kg?` · ${o.weight_kg} kg`:''}</span>`:'',
+      o.special_items?`<span class="chip warn">Delicate/heavy items</span>`:'',
+      o.amount!=null?`<span class="chip amt">₹${o.amount}</span>`:''
+    ].join('');
     return `<div class="order">
       <div class="top">
         <div><div class="who">${o.customer_name}</div><div class="ph">+91 ${o.customer_phone}</div>
         <div class="meta">Order #${o.id}${comp?` · Compartment ${comp}`:''}</div></div>
         <span class="badge b-${o.status}">${o.status}</span>
       </div>
+      <div class="info">${chips}</div>
       <div class="actions">${actions}</div>
     </div>`;
   }).join('');
@@ -141,6 +186,35 @@ async function confirmReturn(){
   const r=await fetch('/staff/api/return',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order_id:currentOrder,compartment:chosenFree})});
   const d=await r.json(); if(!d.ok){alert(d.error);return;}
   closeModal(); alert('Compartment '+d.opened+' opening. Place the clean laundry and close.'); load();
+}
+
+function openAssess(id){
+  const o=ORDERS.find(x=>x.id===id); if(!o||!PRICES) return;
+  assessId=id;
+  $('as-cust').textContent=`${o.customer_name} · Order #${o.id}`+(o.item_count?` · customer entered ${o.item_count} items`:'')+(o.special_items?' · ⚠️ delicate/heavy items':'');
+  $('as-svc').innerHTML=PRICES.services.map(s=>`<option value="${s.code}" ${s.code===(o.service||'WASH_FOLD')?'selected':''}>${s.label}</option>`).join('');
+  $('as-count').value=o.staff_count||o.item_count||''; $('as-kg').value=o.weight_kg||''; $('as-extra').value=''; $('as-note').value=o.price_note||'';
+  previewPrice(); $('assessModal').classList.add('show');
+}
+function closeAssess(){$('assessModal').classList.remove('show');}
+function calc(){
+  const s=PRICES.services.find(x=>x.code===$('as-svc').value); const n=parseInt($('as-count').value)||0;
+  const kg=parseFloat($('as-kg').value)||0; const extra=Math.round(parseFloat($('as-extra').value)||0);
+  let std, basis;
+  if(s.per_kg && kg>=PRICES.min_kg){ std=Math.round(kg*s.per_kg); basis=`${kg} kg × ₹${s.per_kg}`; }
+  else { std=n*s.per_piece; basis=`${n} pcs × ₹${s.per_piece}`; }
+  return {std, extra, total:std+extra, basis};
+}
+function previewPrice(){ if(!PRICES) return; const c=calc();
+  $('as-preview').innerHTML=`${c.basis}${c.extra?` + ₹${c.extra} special`:''}<br><b>₹${c.total}</b>`; }
+async function saveAssess(){
+  const body={order_id:assessId, service:$('as-svc').value, staff_count:$('as-count').value,
+              weight_kg:$('as-kg').value, extra_amount:$('as-extra').value||0, price_note:$('as-note').value};
+  const r=await fetch('/staff/api/assess',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const d=await r.json(); if(!d.ok){alert(d.error);return;}
+  closeAssess();
+  alert(`Saved: ₹${d.amount}.`+(d.sent?' Customer has been sent the bill on WhatsApp.':' Could not WhatsApp the customer — please call them.')+(d.mismatch?'\n⚠️ Count differs from what the customer entered.':''));
+  load();
 }
 
 load(); setInterval(load, 5000);   // auto-refresh every 5s
