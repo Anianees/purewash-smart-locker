@@ -34,6 +34,16 @@ APP_SECRET = os.environ.get("WA_APP_SECRET", "")
 TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TG_CHAT = os.environ.get("TELEGRAM_STAFF_CHAT_ID", "")
 
+# app.py registers a function here to handle customer messages
+# (WhatsApp verification codes, auto-reply). It is called as
+# handler(sender_wa_id, sender_name, text) and returns True if the
+# message was fully handled (then it is not forwarded to Telegram).
+_message_handler = None
+
+def register_message_handler(fn):
+    global _message_handler
+    _message_handler = fn
+
 
 # ---------------------------------------------------------------------------
 # 1. Verification handshake (Meta calls this once when you click "Verify and save")
@@ -113,7 +123,14 @@ def receive():
                 else:
                     body = f"[{kind}]"
                 log.info("WA message from %s: %s", sender, body)
-                _telegram(f"📩 WhatsApp from {names.get(sender) or sender} (+{sender}):\n{body}")
+                handled = False
+                if _message_handler:
+                    try:
+                        handled = bool(_message_handler(sender, names.get(sender, ""), body))
+                    except Exception as exc:  # never let a bug stop the webhook
+                        log.exception("message handler failed: %s", exc)
+                if not handled:
+                    _telegram(f"📩 WhatsApp from {names.get(sender) or sender} (+{sender}):\n{body}")
 
             # Delivery status updates for messages Purewash sent
             for st in value.get("statuses", []):
