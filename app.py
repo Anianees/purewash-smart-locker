@@ -54,6 +54,27 @@ WA_SUPPORT_NUMBER  = re.sub(r"\D", "", os.environ.get("WA_SUPPORT_NUMBER", "9180
 VERIFY_TTL         = 10 * 60          # a code is valid for 10 minutes
 AUTO_REPLY_EVERY   = 12 * 60 * 60     # auto-reply to the same customer at most every 12 hours
 
+# ---------------- PRICES (edit here; the locker page and staff portal read these) ----------------
+# Wash services: 2 kg or more -> charged per kg; under 2 kg -> charged per piece.
+PRICES = {
+    "WASH_FOLD": {"label": "Wash & Fold", "per_kg": 65,  "per_piece": 39},
+    "WASH_IRON": {"label": "Wash & Iron", "per_kg": 110, "per_piece": 49},
+    "DRY_CLEAN": {"label": "Dry Clean",   "per_kg": None, "per_piece": 70},
+}
+MIN_KG_FOR_KG_RATE = 2.0
+SPECIAL_ITEMS_NOTE = ("Delicates (silk, chiffon, wool, embroidered or zari wear) and heavy items "
+                      "(blazers, suits, sarees, blankets, quilts, curtains) are priced after we check the fabric.")
+
+def calc_amount(service, pieces, weight_kg):
+    """Standard price in rupees. Special items can be adjusted by staff on top of this."""
+    p = PRICES.get(service)
+    if not p:
+        return None
+    pieces = int(pieces or 0)
+    if p["per_kg"] and weight_kg and float(weight_kg) >= MIN_KG_FOR_KG_RATE:
+        return int(round(float(weight_kg) * p["per_kg"]))
+    return pieces * p["per_piece"]
+
 # Staff portal password (set STAFF_PASSWORD in Render; fallback works immediately)
 STAFF_PASSWORD = os.environ.get("STAFF_PASSWORD", "purewash123")
 
@@ -115,7 +136,21 @@ def init_db():
         PRIMARY KEY (locker_id, compartment)
     )"""):
         con.execute(stmt)
-    con.commit(); con.close()
+    con.commit()
+    # Columns added later (service, counts, price). Safe to run on every start.
+    for col, typ in (("service", "TEXT"), ("item_count", "INTEGER"), ("special_items", "INTEGER"),
+                     ("staff_count", "INTEGER"), ("weight_kg", "REAL"), ("amount", "INTEGER"),
+                     ("price_note", "TEXT")):
+        try:
+            if USE_PG:
+                con.execute(f"ALTER TABLE orders ADD COLUMN IF NOT EXISTS {col} {typ}")
+            else:
+                con.execute(f"ALTER TABLE orders ADD COLUMN {col} {typ}")
+            con.commit()
+        except Exception:
+            if USE_PG:
+                con.con.rollback()
+    con.close()
     print("Database:", "Postgres (DATABASE_URL)" if USE_PG else f"SQLite file {DB_PATH}")
 
 def ensure_compartments(locker_id):
@@ -182,7 +217,7 @@ def notify_customer(phone, template, params, summary):
 def send_text(wa_id, text):
     """Plain WhatsApp text. Only allowed within 24h after the customer messaged us (free)."""
     if not WHATSAPP_TOKEN or not WHATSAPP_PHONE_ID:
-        print(f"[whatsapp text -> {wa_id}] {text}"); return
+        print(f"[whatsapp text -> {wa_id}] {text}"); return True
     try:
         r = requests.post(f"https://graph.facebook.com/{WHATSAPP_API_VERSION}/{WHATSAPP_PHONE_ID}/messages",
                           headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"},
@@ -190,8 +225,10 @@ def send_text(wa_id, text):
                                 "text": {"body": text, "preview_url": True}}, timeout=8)
         if not r.ok:
             print("WhatsApp text failed:", r.status_code, r.text[:300])
+        return r.ok
     except Exception as e:
         print("WhatsApp text failed:", e)
+        return False
 
 # ---------------- HELPERS ----------------
 # Pending "open this door" commands for the ESP32. Kept in memory, not in the
@@ -246,21 +283,28 @@ def availability():
                       (locker_id,)).fetchall()
     return jsonify([{"compartment":r["compartment"],"occupied":bool(r["occupied"])} for r in rows])
 
+@app.route("/api/prices")
+def prices():
+    return jsonify(services=[dict(code=k, **v) for k, v in PRICES.items()],
+                   min_kg=MIN_KG_FOR_KG_RATE, special_note=SPECIAL_ITEMS_NOTE)
+
 @app.route("/api/my-compartment")
 def my_compartment():
     locker_id = clean_locker_id(request.args.get("locker_id",""))
     phone = clean_phone(request.args.get("phone"))
     db = get_db()
     # Customer pickup = a RETURNED order (clean laundry waiting) for this phone
-    row = db.execute("""SELECT return_compartment FROM orders
+    row = db.execute("""SELECT return_compartment, amount, service, staff_count FROM orders
                         WHERE locker_id=? AND customer_phone=? AND status='RETURNED'
                         ORDER BY id DESC LIMIT 1""", (locker_id, phone)).fetchone()
     if row and row["return_compartment"]:
-        return jsonify(found=True, compartment=row["return_compartment"])
+        svc = PRICES.get(row["service"] or "", {}).get("label")
+        return jsonify(found=True, compartment=row["return_compartment"], amount=row["amount"],
+                       service=svc, items=row["staff_count"])
     return jsonify(found=False)
 
 # ---------------- CUSTOMER: open (dropoff / pickup) ----------------
-def do_dropoff(locker_id, compartment, name, phone):
+def do_dropoff(locker_id, compartment, name, phone, service=None, item_count=None, special=0):
     """Create the order and open the door. Returns (order_id, error)."""
     ensure_compartments(locker_id)
     db = get_db()
@@ -271,8 +315,10 @@ def do_dropoff(locker_id, compartment, name, phone):
     if comp["occupied"] == 1:
         return None, "That compartment was just taken. Please pick another."
     cur = db.execute("""INSERT INTO orders (locker_id, drop_compartment, customer_name, customer_phone,
-                        status, created_at) VALUES (?,?,?,?, 'DROPPED', ?) RETURNING id""",
-                     (locker_id, compartment, name, phone, int(time.time())))
+                        status, created_at, service, item_count, special_items)
+                        VALUES (?,?,?,?, 'DROPPED', ?, ?, ?, ?) RETURNING id""",
+                     (locker_id, compartment, name, phone, int(time.time()),
+                      service, item_count, 1 if special else 0))
     order_id = cur.fetchone()["id"]
     db.commit()
     set_unlock(locker_id, compartment, order_id)
@@ -301,7 +347,7 @@ _pending = {}            # token -> dict(code, action, locker_id, compartment, n
 _pending_lock = threading.Lock()
 _auto_replied = {}       # wa_id -> last auto-reply time
 
-def _new_pending(action, locker_id, compartment, name, phone, order_id=None):
+def _new_pending(action, locker_id, compartment, name, phone, order_id=None, extra=None):
     now = time.time()
     with _pending_lock:
         for t in [t for t, p in _pending.items() if now - p["created"] > VERIFY_TTL * 3]:
@@ -313,7 +359,7 @@ def _new_pending(action, locker_id, compartment, name, phone, order_id=None):
         token = secrets.token_urlsafe(16)
         _pending[token] = dict(code=code, action=action, locker_id=locker_id, compartment=compartment,
                                name=name, phone=phone, order_id=order_id, created=now,
-                               state="pending", error=None)
+                               state="pending", error=None, extra=extra or {})
     word = "DROP" if action == "DROPOFF" else "PICK"
     text = f"{word} {code}"
     link = f"https://wa.me/{WA_API_NUMBER}?text={urllib.parse.quote(text)}"
@@ -337,14 +383,24 @@ def open_compartment():
     db = get_db()
 
     if action == "DROPOFF":
+        service = (data.get("service") or "").strip().upper()
+        if service not in PRICES:
+            return jsonify(ok=False, error="Please choose a service."), 400
+        try:
+            item_count = int(data.get("item_count"))
+            assert 1 <= item_count <= 500
+        except Exception:
+            return jsonify(ok=False, error="Please enter how many clothes you are dropping."), 400
+        special = 1 if data.get("special_items") else 0
+        extra = dict(service=service, item_count=item_count, special=special)
         comp = db.execute("SELECT occupied FROM compartments WHERE locker_id=? AND compartment=?",
                           (locker_id, compartment)).fetchone()
         if not comp or comp["occupied"] == 1:
             return jsonify(ok=False, error="That compartment was just taken. Pick another."), 409
         if REQUIRE_WA_VERIFY:
-            token, text, link = _new_pending("DROPOFF", locker_id, compartment, name, phone)
+            token, text, link = _new_pending("DROPOFF", locker_id, compartment, name, phone, extra=extra)
             return jsonify(ok=True, verify=True, token=token, text=text, wa_link=link, compartment=compartment)
-        order_id, err = do_dropoff(locker_id, compartment, name, phone)
+        order_id, err = do_dropoff(locker_id, compartment, name, phone, **extra)
         if err:
             return jsonify(ok=False, error=err), 409
         return jsonify(ok=True, order_id=order_id, compartment=compartment)
@@ -397,7 +453,8 @@ def handle_incoming_whatsapp(wa_id, wa_name, text):
 
         if action == "DROPOFF":
             # Use the number WhatsApp tells us, not what was typed
-            order_id, err = do_dropoff(match["locker_id"], match["compartment"], match["name"], sender_phone)
+            order_id, err = do_dropoff(match["locker_id"], match["compartment"], match["name"], sender_phone,
+                                       **match.get("extra", {}))
             if err:
                 match.update(state="failed", error=err)
                 send_text(wa_id, f"Sorry, {err}")
@@ -470,8 +527,12 @@ def door_latched():
         db.execute("UPDATE compartments SET occupied=1, order_id=?, kind='DIRTY' WHERE locker_id=? AND compartment=?",
                    (dropped["id"], locker_id, comp))
         db.commit()
+        svc = PRICES.get(dropped["service"] or "", {}).get("label", "—")
+        extra = f"\n{svc} · customer says {dropped['item_count'] or '?'} items"
+        if dropped["special_items"]:
+            extra += " · ⚠️ includes delicate/heavy items"
         notify_staff(f"NEW DROP-OFF · Locker {locker_id} · Compartment {comp}\n"
-                     f"{dropped['customer_name']} · {dropped['customer_phone']}\n"
+                     f"{dropped['customer_name']} · {dropped['customer_phone']}{extra}\n"
                      f"Order #{dropped['id']} — please collect for washing.")
         notify_customer(dropped["customer_phone"], "laundry_received",
                         [dropped["customer_name"], comp],
@@ -565,6 +626,68 @@ def staff_collect():
                     f"laundry collected from compartment {comp} for washing (order #{order['id']})")
     return jsonify(ok=True, opened=comp)
 
+@app.route("/staff/api/assess", methods=["POST"])
+@staff_required
+def staff_assess():
+    """Staff enter their own count (and weight), the price is worked out, and the customer
+    gets a WhatsApp message with the count and amount (flagging any count difference)."""
+    data = request.get_json(force=True)
+    db = get_db()
+    order = db.execute("SELECT * FROM orders WHERE id=?", (data.get("order_id"),)).fetchone()
+    if not order or order["status"] not in ("COLLECTED", "WASHING", "READY"):
+        return jsonify(ok=False, error="Collect the laundry first."), 400
+    service = (data.get("service") or order["service"] or "").upper()
+    if service not in PRICES:
+        return jsonify(ok=False, error="Choose a service."), 400
+    try:
+        staff_count = int(data.get("staff_count"))
+        assert staff_count >= 1
+    except Exception:
+        return jsonify(ok=False, error="Enter the number of items you counted."), 400
+    weight = data.get("weight_kg")
+    try:
+        weight = float(weight) if weight not in (None, "") else None
+        assert weight is None or 0 < weight < 200
+    except Exception:
+        return jsonify(ok=False, error="Weight must be a number in kg, e.g. 2.5"), 400
+    standard = calc_amount(service, staff_count, weight)
+    extra_amt = data.get("extra_amount") or 0
+    try:
+        extra_amt = int(round(float(extra_amt)))
+        assert extra_amt >= 0
+    except Exception:
+        return jsonify(ok=False, error="Extra charge must be a number."), 400
+    amount = standard + extra_amt
+    note = (data.get("price_note") or "").strip()[:200]
+    db.execute("""UPDATE orders SET service=?, staff_count=?, weight_kg=?, amount=?, price_note=?, updated_at=?
+                  WHERE id=?""", (service, staff_count, weight, amount, note, int(time.time()), order["id"]))
+    db.commit()
+
+    # Tell the customer (free if within 24h of their WhatsApp confirmation)
+    label = PRICES[service]["label"]
+    if weight and weight >= MIN_KG_FOR_KG_RATE and PRICES[service]["per_kg"]:
+        basis = f"{weight:g} kg × ₹{PRICES[service]['per_kg']}/kg"
+    else:
+        basis = f"{staff_count} pcs × ₹{PRICES[service]['per_piece']}"
+    lines = [f"Hi {order['customer_name']}, we've checked your Purewash order #{order['id']}.",
+             f"Items counted: {staff_count}"]
+    mismatch = order["item_count"] and order["item_count"] != staff_count
+    if mismatch:
+        lines[-1] += f" (you entered {order['item_count']})"
+    lines += [f"Service: {label} ({basis})"]
+    if extra_amt:
+        lines += [f"Special care: ₹{extra_amt}" + (f" ({note})" if note else "")]
+    lines += [f"Amount: ₹{amount}"]
+    if mismatch:
+        lines += ["If the count looks wrong, please reply within 2 hours so we can check before washing."]
+    sent = send_text("91" + clean_phone(order["customer_phone"]), "\n".join(lines))
+    if not sent:
+        notify_staff(f"⚠️ Could not WhatsApp the bill for order #{order['id']} to {order['customer_phone']} "
+                     f"(more than 24h since they messaged). Please call them: {staff_count} items, ₹{amount}.")
+    if mismatch:
+        notify_staff(f"⚠️ Order #{order['id']}: customer entered {order['item_count']} items, staff counted {staff_count}.")
+    return jsonify(ok=True, amount=amount, standard=standard, mismatch=bool(mismatch), sent=sent)
+
 @app.route("/staff/api/status", methods=["POST"])
 @staff_required
 def staff_status():
@@ -574,6 +697,11 @@ def staff_status():
     if new not in ("WASHING","READY"):
         return jsonify(ok=False, error="Invalid status."), 400
     db = get_db()
+    row = db.execute("SELECT amount FROM orders WHERE id=?", (order_id,)).fetchone()
+    if not row:
+        return jsonify(ok=False, error="Order not found."), 404
+    if new == "WASHING" and row["amount"] is None:
+        return jsonify(ok=False, error="Count & price the order first."), 400
     db.execute("UPDATE orders SET status=?, updated_at=? WHERE id=?", (new, int(time.time()), order_id))
     db.commit()
     return jsonify(ok=True)
