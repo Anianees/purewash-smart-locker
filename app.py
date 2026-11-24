@@ -18,11 +18,12 @@ Hardware: ESP32 polls /api/check-unlock?device=locker1, opens the compartment
 the flag names, then reports /api/door-latched.
 """
 
-import sqlite3, time, os, threading, re, secrets, urllib.parse
+import sqlite3, time, os, threading, re, secrets, urllib.parse, hmac
 from functools import wraps
 from flask import (Flask, request, jsonify, render_template,
                    redirect, session, g, url_for)
 import requests
+from itsdangerous import URLSafeTimedSerializer, BadSignature
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "purewash-secret-change-me")
@@ -52,6 +53,11 @@ REQUIRE_WA_VERIFY  = os.environ.get("REQUIRE_WA_VERIFY", "1") != "0"
 WA_API_NUMBER      = re.sub(r"\D", "", os.environ.get("WA_API_NUMBER", "918848639844"))     # automatic updates number
 WA_SUPPORT_NUMBER  = re.sub(r"\D", "", os.environ.get("WA_SUPPORT_NUMBER", "918075316525")) # staff chat number
 VERIFY_TTL         = 10 * 60          # a code is valid for 10 minutes
+WA_OTP_TEMPLATE    = os.environ.get("WA_OTP_TEMPLATE", "locker_otp")   # Authentication template with "Copy code" button
+DEVICE_DAYS        = 90               # a verified phone is remembered in that browser for 90 days
+OTP_RESEND_GAP     = 30               # seconds between code requests for one number
+OTP_MAX_PER_HOUR   = 5
+OTP_MAX_TRIES      = 5
 AUTO_REPLY_EVERY   = 12 * 60 * 60     # auto-reply to the same customer at most every 12 hours
 
 # ---------------- PRICES (edit here; the locker page and staff portal read these) ----------------
@@ -365,6 +371,112 @@ def _new_pending(action, locker_id, compartment, name, phone, order_id=None, ext
     link = f"https://wa.me/{WA_API_NUMBER}?text={urllib.parse.quote(text)}"
     return token, text, link
 
+# ---------------- OTP on WhatsApp + "remember this phone" ----------------
+_device_signer = URLSafeTimedSerializer(app.secret_key, salt="pw-device")
+_otps = {}                 # phone -> dict(code, created, tries, sends=[timestamps])
+_otp_lock = threading.Lock()
+
+def device_phone():
+    """The phone number this browser has verified before (or None)."""
+    tok = request.cookies.get("pw_dev")
+    if not tok:
+        return None
+    try:
+        data = _device_signer.loads(tok, max_age=DEVICE_DAYS * 86400)
+        return data.get("p"), data.get("n", "")
+    except BadSignature:
+        return None
+    except Exception:
+        return None
+
+def _verified_phone():
+    d = device_phone()
+    return d[0] if d else None
+
+def send_otp_template(phone, code):
+    """Send the code with the Authentication template. Returns True if WhatsApp accepted it."""
+    if not WHATSAPP_TOKEN or not WHATSAPP_PHONE_ID:
+        print(f"[whatsapp OTP -> {phone}] {code}"); return True
+    payload = {"messaging_product": "whatsapp", "to": f"91{phone}", "type": "template",
+               "template": {"name": WA_OTP_TEMPLATE, "language": {"code": WHATSAPP_TEMPLATE_LANG},
+                            "components": [
+                                {"type": "body", "parameters": [{"type": "text", "text": code}]},
+                                {"type": "button", "sub_type": "url", "index": "0",
+                                 "parameters": [{"type": "text", "text": code}]}]}}
+    try:
+        r = requests.post(f"https://graph.facebook.com/{WHATSAPP_API_VERSION}/{WHATSAPP_PHONE_ID}/messages",
+                          headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"}, json=payload, timeout=8)
+        if not r.ok:
+            print("OTP send failed:", r.status_code, r.text[:300])
+        return r.ok
+    except Exception as e:
+        print("OTP send failed:", e)
+        return False
+
+@app.route("/api/me")
+def api_me():
+    d = device_phone()
+    if not d:
+        return jsonify(known=False)
+    return jsonify(known=True, phone=d[0], name=d[1])
+
+@app.route("/api/otp/send", methods=["POST"])
+def otp_send():
+    data = request.get_json(force=True)
+    phone = clean_phone(data.get("phone"))
+    if len(phone) != 10:
+        return jsonify(ok=False, error="Enter a valid 10-digit mobile number."), 400
+    now = time.time()
+    with _otp_lock:
+        rec = _otps.get(phone) or {"sends": []}
+        rec["sends"] = [t for t in rec["sends"] if now - t < 3600]
+        if rec["sends"] and now - rec["sends"][-1] < OTP_RESEND_GAP:
+            wait = int(OTP_RESEND_GAP - (now - rec["sends"][-1])) + 1
+            return jsonify(ok=False, error=f"Please wait {wait} seconds before asking for a new code.", wait=wait), 429
+        if len(rec["sends"]) >= OTP_MAX_PER_HOUR:
+            return jsonify(ok=False, error="Too many codes requested. Please try again in an hour, "
+                                            "or WhatsApp us at +91 80753 16525."), 429
+        code = f"{secrets.randbelow(900000) + 100000}"
+        rec.update(code=code, created=now, tries=0)
+        rec["sends"].append(now)
+        _otps[phone] = rec
+    if not send_otp_template(phone, code):
+        with _otp_lock:
+            _otps.get(phone, {}).pop("code", None)
+        # The page then falls back to "send a message to confirm"
+        return jsonify(ok=False, fallback=True, error="Could not send the code on WhatsApp."), 502
+    return jsonify(ok=True, resend_after=OTP_RESEND_GAP)
+
+@app.route("/api/otp/verify", methods=["POST"])
+def otp_verify():
+    data = request.get_json(force=True)
+    phone = clean_phone(data.get("phone"))
+    code = re.sub(r"\D", "", data.get("code") or "")
+    name = (data.get("name") or "").strip()[:60]
+    with _otp_lock:
+        rec = _otps.get(phone)
+        if not rec or not rec.get("code") or time.time() - rec["created"] > VERIFY_TTL:
+            return jsonify(ok=False, error="This code has expired. Tap \"Resend code\"."), 400
+        if rec["tries"] >= OTP_MAX_TRIES:
+            return jsonify(ok=False, error="Too many wrong tries. Tap \"Resend code\" for a new one."), 400
+        rec["tries"] += 1
+        if not hmac.compare_digest(code, rec["code"]):
+            left = OTP_MAX_TRIES - rec["tries"]
+            return jsonify(ok=False, error=f"That code is not right. {left} tries left." if left else
+                                           "Too many wrong tries. Tap \"Resend code\" for a new one."), 400
+        _otps.pop(phone, None)
+    resp = jsonify(ok=True)
+    resp.set_cookie("pw_dev", _device_signer.dumps({"p": phone, "n": name}),
+                    max_age=DEVICE_DAYS * 86400, httponly=True, samesite="Lax",
+                    secure=request.is_secure or request.headers.get("X-Forwarded-Proto") == "https")
+    return resp
+
+@app.route("/api/forget-me", methods=["POST"])
+def forget_me():
+    resp = jsonify(ok=True)
+    resp.delete_cookie("pw_dev")
+    return resp
+
 @app.route("/api/open", methods=["POST"])
 def open_compartment():
     data = request.get_json(force=True)
@@ -381,6 +493,7 @@ def open_compartment():
 
     ensure_compartments(locker_id)
     db = get_db()
+    needs_verify = REQUIRE_WA_VERIFY and _verified_phone() != phone
 
     if action == "DROPOFF":
         service = (data.get("service") or "").strip().upper()
@@ -397,7 +510,7 @@ def open_compartment():
                           (locker_id, compartment)).fetchone()
         if not comp or comp["occupied"] == 1:
             return jsonify(ok=False, error="That compartment was just taken. Pick another."), 409
-        if REQUIRE_WA_VERIFY:
+        if needs_verify:
             token, text, link = _new_pending("DROPOFF", locker_id, compartment, name, phone, extra=extra)
             return jsonify(ok=True, verify=True, token=token, text=text, wa_link=link, compartment=compartment)
         order_id, err = do_dropoff(locker_id, compartment, name, phone, **extra)
@@ -409,7 +522,7 @@ def open_compartment():
         order = find_ready_order(locker_id, phone, compartment)
         if not order:
             return jsonify(ok=False, error="No ready laundry found for you in that compartment."), 403
-        if REQUIRE_WA_VERIFY:
+        if needs_verify:
             token, text, link = _new_pending("PICKUP", locker_id, compartment, name, phone, order["id"])
             return jsonify(ok=True, verify=True, token=token, text=text, wa_link=link, compartment=compartment)
         do_pickup(locker_id, compartment, order)
