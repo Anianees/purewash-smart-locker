@@ -18,7 +18,7 @@ Hardware: ESP32 polls /api/check-unlock?device=locker1, opens the compartment
 the flag names, then reports /api/door-latched.
 """
 
-import sqlite3, time, os, threading
+import sqlite3, time, os, threading, re
 from functools import wraps
 from flask import (Flask, request, jsonify, render_template,
                    redirect, session, g, url_for)
@@ -189,6 +189,16 @@ def free_compartments(locker_id):
                       (locker_id,)).fetchall()
     return [r["compartment"] for r in rows]
 
+# ---------------- INPUT CLEANUP ----------------
+def clean_locker_id(v):
+    """'Locker1.', ' locker1/', 'LOCKER1' -> 'locker1' (links pasted into WhatsApp often pick up stray characters)."""
+    return re.sub(r"[^a-z0-9_-]", "", (v or "").strip().lower())
+
+def clean_phone(v):
+    """'+91 98765 43210', '919876543210', '09876543210' -> '9876543210'."""
+    digits = re.sub(r"\D", "", v or "")
+    return digits[-10:] if len(digits) >= 10 else digits
+
 # ---------------- CUSTOMER PAGES ----------------
 @app.route("/")
 def home():
@@ -196,12 +206,17 @@ def home():
 
 @app.route("/locker/<locker_id>")
 def locker_page(locker_id):
+    clean = clean_locker_id(locker_id)
+    if not clean:
+        return redirect("/locker/locker1")
+    if clean != locker_id:
+        return redirect(f"/locker/{clean}")
     ensure_compartments(locker_id)
     return render_template("locker.html", locker_id=locker_id)
 
 @app.route("/api/availability")
 def availability():
-    locker_id = request.args.get("locker_id","")
+    locker_id = clean_locker_id(request.args.get("locker_id",""))
     ensure_compartments(locker_id)
     db = get_db()
     rows = db.execute("SELECT compartment, occupied FROM compartments WHERE locker_id=? ORDER BY compartment",
@@ -210,8 +225,8 @@ def availability():
 
 @app.route("/api/my-compartment")
 def my_compartment():
-    locker_id = request.args.get("locker_id","")
-    phone = (request.args.get("phone") or "").strip()
+    locker_id = clean_locker_id(request.args.get("locker_id",""))
+    phone = clean_phone(request.args.get("phone"))
     db = get_db()
     # Customer pickup = a RETURNED order (clean laundry waiting) for this phone
     row = db.execute("""SELECT return_compartment FROM orders
@@ -225,9 +240,9 @@ def my_compartment():
 @app.route("/api/open", methods=["POST"])
 def open_compartment():
     data = request.get_json(force=True)
-    locker_id = (data.get("locker_id") or "").strip()
+    locker_id = clean_locker_id(data.get("locker_id"))
     name  = (data.get("name") or "").strip()
-    phone = (data.get("phone") or "").strip()
+    phone = clean_phone(data.get("phone"))
     action = (data.get("action") or "").strip().upper()
     compartment = data.get("compartment")
 
