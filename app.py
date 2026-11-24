@@ -18,7 +18,7 @@ Hardware: ESP32 polls /api/check-unlock?device=locker1, opens the compartment
 the flag names, then reports /api/door-latched.
 """
 
-import sqlite3, time, os, threading, re
+import sqlite3, time, os, threading, re, secrets, urllib.parse
 from functools import wraps
 from flask import (Flask, request, jsonify, render_template,
                    redirect, session, g, url_for)
@@ -44,6 +44,15 @@ WHATSAPP_TOKEN         = os.environ.get("WHATSAPP_TOKEN", "")
 WHATSAPP_PHONE_ID      = os.environ.get("WHATSAPP_PHONE_ID", "")
 WHATSAPP_API_VERSION   = os.environ.get("WHATSAPP_API_VERSION", "v25.0")
 WHATSAPP_TEMPLATE_LANG = os.environ.get("WHATSAPP_TEMPLATE_LANG", "en")  # template language "English" = en
+
+# WhatsApp verification at the locker: the customer confirms by sending a
+# short code from their own WhatsApp, so the order always gets their real
+# number. Set REQUIRE_WA_VERIFY=0 in Render to switch it off instantly.
+REQUIRE_WA_VERIFY  = os.environ.get("REQUIRE_WA_VERIFY", "1") != "0"
+WA_API_NUMBER      = re.sub(r"\D", "", os.environ.get("WA_API_NUMBER", "918848639844"))     # automatic updates number
+WA_SUPPORT_NUMBER  = re.sub(r"\D", "", os.environ.get("WA_SUPPORT_NUMBER", "918075316525")) # staff chat number
+VERIFY_TTL         = 10 * 60          # a code is valid for 10 minutes
+AUTO_REPLY_EVERY   = 12 * 60 * 60     # auto-reply to the same customer at most every 12 hours
 
 # Staff portal password (set STAFF_PASSWORD in Render; fallback works immediately)
 STAFF_PASSWORD = os.environ.get("STAFF_PASSWORD", "purewash123")
@@ -170,6 +179,20 @@ def notify_customer(phone, template, params, summary):
     notify_staff(f"⚠️ WhatsApp '{template}' to {phone} FAILED: {reason}\n"
                  f"Please inform the customer manually: {summary}")
 
+def send_text(wa_id, text):
+    """Plain WhatsApp text. Only allowed within 24h after the customer messaged us (free)."""
+    if not WHATSAPP_TOKEN or not WHATSAPP_PHONE_ID:
+        print(f"[whatsapp text -> {wa_id}] {text}"); return
+    try:
+        r = requests.post(f"https://graph.facebook.com/{WHATSAPP_API_VERSION}/{WHATSAPP_PHONE_ID}/messages",
+                          headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"},
+                          json={"messaging_product": "whatsapp", "to": wa_id, "type": "text",
+                                "text": {"body": text, "preview_url": True}}, timeout=8)
+        if not r.ok:
+            print("WhatsApp text failed:", r.status_code, r.text[:300])
+    except Exception as e:
+        print("WhatsApp text failed:", e)
+
 # ---------------- HELPERS ----------------
 # Pending "open this door" commands for the ESP32. Kept in memory, not in the
 # database: the ESP32 polls every few seconds, and a command only lives 2 minutes,
@@ -237,6 +260,65 @@ def my_compartment():
     return jsonify(found=False)
 
 # ---------------- CUSTOMER: open (dropoff / pickup) ----------------
+def do_dropoff(locker_id, compartment, name, phone):
+    """Create the order and open the door. Returns (order_id, error)."""
+    ensure_compartments(locker_id)
+    db = get_db()
+    comp = db.execute("SELECT occupied FROM compartments WHERE locker_id=? AND compartment=?",
+                      (locker_id, compartment)).fetchone()
+    if not comp:
+        return None, "That compartment does not exist."
+    if comp["occupied"] == 1:
+        return None, "That compartment was just taken. Please pick another."
+    cur = db.execute("""INSERT INTO orders (locker_id, drop_compartment, customer_name, customer_phone,
+                        status, created_at) VALUES (?,?,?,?, 'DROPPED', ?) RETURNING id""",
+                     (locker_id, compartment, name, phone, int(time.time())))
+    order_id = cur.fetchone()["id"]
+    db.commit()
+    set_unlock(locker_id, compartment, order_id)
+    return order_id, None
+
+def find_ready_order(locker_id, phone, compartment):
+    return get_db().execute("""SELECT * FROM orders WHERE locker_id=? AND customer_phone=?
+                               AND status='RETURNED' AND return_compartment=?
+                               ORDER BY id DESC LIMIT 1""",
+                            (locker_id, phone, compartment)).fetchone()
+
+def do_pickup(locker_id, compartment, order):
+    """Open the door, close the order, free the compartment."""
+    db = get_db()
+    set_unlock(locker_id, compartment, order["id"])
+    db.execute("UPDATE orders SET status='PICKED_UP', updated_at=? WHERE id=?",
+               (int(time.time()), order["id"]))
+    db.execute("UPDATE compartments SET occupied=0, order_id=NULL, kind=NULL WHERE locker_id=? AND compartment=?",
+               (locker_id, compartment))
+    db.commit()
+    notify_staff(f"PICKED UP · Locker {locker_id} · Compartment {compartment}\n"
+                 f"{order['customer_name']} · Order #{order['id']} complete.")
+
+# ---------------- WhatsApp verification (pending codes, kept in memory) ----------------
+_pending = {}            # token -> dict(code, action, locker_id, compartment, name, phone, order_id, created, state, error)
+_pending_lock = threading.Lock()
+_auto_replied = {}       # wa_id -> last auto-reply time
+
+def _new_pending(action, locker_id, compartment, name, phone, order_id=None):
+    now = time.time()
+    with _pending_lock:
+        for t in [t for t, p in _pending.items() if now - p["created"] > VERIFY_TTL * 3]:
+            del _pending[t]                                  # tidy old entries
+        live = {p["code"] for p in _pending.values() if p["state"] == "pending"}
+        code = f"{secrets.randbelow(9000) + 1000}"
+        while code in live:
+            code = f"{secrets.randbelow(9000) + 1000}"
+        token = secrets.token_urlsafe(16)
+        _pending[token] = dict(code=code, action=action, locker_id=locker_id, compartment=compartment,
+                               name=name, phone=phone, order_id=order_id, created=now,
+                               state="pending", error=None)
+    word = "DROP" if action == "DROPOFF" else "PICK"
+    text = f"{word} {code}"
+    link = f"https://wa.me/{WA_API_NUMBER}?text={urllib.parse.quote(text)}"
+    return token, text, link
+
 @app.route("/api/open", methods=["POST"])
 def open_compartment():
     data = request.get_json(force=True)
@@ -253,40 +335,105 @@ def open_compartment():
 
     ensure_compartments(locker_id)
     db = get_db()
-    comp = db.execute("SELECT occupied FROM compartments WHERE locker_id=? AND compartment=?",
-                      (locker_id, compartment)).fetchone()
 
     if action == "DROPOFF":
-        if comp["occupied"] == 1:
+        comp = db.execute("SELECT occupied FROM compartments WHERE locker_id=? AND compartment=?",
+                          (locker_id, compartment)).fetchone()
+        if not comp or comp["occupied"] == 1:
             return jsonify(ok=False, error="That compartment was just taken. Pick another."), 409
-        cur = db.execute("""INSERT INTO orders (locker_id, drop_compartment, customer_name, customer_phone,
-                            status, created_at) VALUES (?,?,?,?, 'DROPPED', ?) RETURNING id""",
-                         (locker_id, compartment, name, phone, int(time.time())))
-        order_id = cur.fetchone()["id"]
-        db.commit()
-        set_unlock(locker_id, compartment, order_id)
+        if REQUIRE_WA_VERIFY:
+            token, text, link = _new_pending("DROPOFF", locker_id, compartment, name, phone)
+            return jsonify(ok=True, verify=True, token=token, text=text, wa_link=link, compartment=compartment)
+        order_id, err = do_dropoff(locker_id, compartment, name, phone)
+        if err:
+            return jsonify(ok=False, error=err), 409
         return jsonify(ok=True, order_id=order_id, compartment=compartment)
 
     elif action == "PICKUP":
-        # find their RETURNED order in this compartment
-        order = db.execute("""SELECT * FROM orders WHERE locker_id=? AND customer_phone=?
-                              AND status='RETURNED' AND return_compartment=?
-                              ORDER BY id DESC LIMIT 1""",
-                           (locker_id, phone, compartment)).fetchone()
+        order = find_ready_order(locker_id, phone, compartment)
         if not order:
             return jsonify(ok=False, error="No ready laundry found for you in that compartment."), 403
-        set_unlock(locker_id, compartment, order["id"])
-        # Customer is collecting -> close the order and free the compartment
-        db.execute("UPDATE orders SET status='PICKED_UP', updated_at=? WHERE id=?",
-                   (int(time.time()), order["id"]))
-        db.execute("UPDATE compartments SET occupied=0, order_id=NULL, kind=NULL WHERE locker_id=? AND compartment=?",
-                   (locker_id, compartment))
-        db.commit()
-        notify_staff(f"PICKED UP · Locker {locker_id} · Compartment {compartment}\n"
-                     f"{order['customer_name']} · Order #{order['id']} complete.")
+        if REQUIRE_WA_VERIFY:
+            token, text, link = _new_pending("PICKUP", locker_id, compartment, name, phone, order["id"])
+            return jsonify(ok=True, verify=True, token=token, text=text, wa_link=link, compartment=compartment)
+        do_pickup(locker_id, compartment, order)
         return jsonify(ok=True, order_id=order["id"], compartment=compartment)
 
     return jsonify(ok=False, error="Invalid action."), 400
+
+@app.route("/api/verify-status")
+def verify_status():
+    token = request.args.get("token", "")
+    with _pending_lock:
+        p = _pending.get(token)
+        if not p:
+            return jsonify(state="expired")
+        if p["state"] == "pending" and time.time() - p["created"] > VERIFY_TTL:
+            p["state"] = "expired"
+        return jsonify(state=p["state"], compartment=p["compartment"], error=p["error"])
+
+def handle_incoming_whatsapp(wa_id, wa_name, text):
+    """Called by whatsapp_webhook.py for every customer message. True = handled."""
+    m = re.search(r"\b(DROP|PICK)\s*-?\s*(\d{4})\b", text or "", re.IGNORECASE)
+    if m:
+        word, code = m.group(1).upper(), m.group(2)
+        action = "DROPOFF" if word == "DROP" else "PICKUP"
+        sender_phone = clean_phone(wa_id)
+        with _pending_lock:
+            match = None
+            for p in _pending.values():
+                if p["code"] == code and p["action"] == action and p["state"] == "pending" \
+                        and time.time() - p["created"] <= VERIFY_TTL:
+                    match = p; break
+            if match:
+                match["state"] = "working"
+        if not match:
+            with _pending_lock:
+                seen = any(p["code"] == code and p["action"] == action and p["state"] != "pending"
+                           and time.time() - p["created"] <= VERIFY_TTL for p in _pending.values())
+            if not seen:   # (a repeat delivery of a code we already used is ignored quietly)
+                send_text(wa_id, "This code has expired or is not valid. Please start again on the locker page.")
+            return True
+
+        if action == "DROPOFF":
+            # Use the number WhatsApp tells us, not what was typed
+            order_id, err = do_dropoff(match["locker_id"], match["compartment"], match["name"], sender_phone)
+            if err:
+                match.update(state="failed", error=err)
+                send_text(wa_id, f"Sorry, {err}")
+                return True
+            match.update(state="done")
+            if sender_phone != match["phone"]:
+                notify_staff(f"ℹ️ Order #{order_id}: customer typed {match['phone']} but verified from "
+                             f"{sender_phone}. Saved the verified number.")
+            send_text(wa_id, f"✅ Verified. Compartment {match['compartment']} is opening now. "
+                             f"Place your laundry inside and close the door.")
+        else:
+            order = get_db().execute("SELECT * FROM orders WHERE id=?", (match["order_id"],)).fetchone()
+            if not order or order["status"] != "RETURNED":
+                match.update(state="failed", error="This laundry has already been collected.")
+                send_text(wa_id, "This laundry has already been collected.")
+                return True
+            if clean_phone(order["customer_phone"]) != sender_phone:
+                match.update(state="failed",
+                             error="Please send the code from the WhatsApp number this order belongs to.")
+                send_text(wa_id, "This WhatsApp number does not match the order, so the locker was not opened. "
+                                 "Please send the code from the number you used at drop-off.")
+                return True
+            do_pickup(match["locker_id"], match["compartment"], order)
+            match.update(state="done")
+            send_text(wa_id, f"✅ Verified. Compartment {match['compartment']} is opening now. "
+                             f"Please collect your laundry and close the door. Thank you!")
+        return True
+
+    # Any other message: point the customer to the staff chat number (at most every 12 hours),
+    # and let the webhook forward their message to staff on Telegram.
+    now = time.time()
+    if now - _auto_replied.get(wa_id, 0) > AUTO_REPLY_EVERY:
+        _auto_replied[wa_id] = now
+        send_text(wa_id, "Hi! This number sends automatic Purewash updates. To chat with our team, "
+                         f"tap here: https://wa.me/{WA_SUPPORT_NUMBER}")
+    return False
 
 # ---------------- ESP32 polling ----------------
 @app.route("/api/check-unlock")
@@ -467,8 +614,9 @@ def staff_open_comp():
     return jsonify(ok=True, opened=comp)
 
 # ---------------- WhatsApp webhook (whatsapp_webhook.py) ----------------
-from whatsapp_webhook import wa_bp
+from whatsapp_webhook import wa_bp, register_message_handler
 app.register_blueprint(wa_bp)
+register_message_handler(handle_incoming_whatsapp)
 
 # ---------------- run ----------------
 if __name__ == "__main__":
