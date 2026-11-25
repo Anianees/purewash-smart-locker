@@ -52,6 +52,8 @@ WHATSAPP_TEMPLATE_LANG = os.environ.get("WHATSAPP_TEMPLATE_LANG", "en")  # templ
 REQUIRE_WA_VERIFY  = os.environ.get("REQUIRE_WA_VERIFY", "1") != "0"
 WA_API_NUMBER      = re.sub(r"\D", "", os.environ.get("WA_API_NUMBER", "918848639844"))     # automatic updates number
 WA_SUPPORT_NUMBER  = re.sub(r"\D", "", os.environ.get("WA_SUPPORT_NUMBER", "918075316525")) # staff chat number
+# Staff alerts go to this WhatsApp number (the shop's business WhatsApp). Telegram stays as a backup.
+STAFF_WHATSAPP     = re.sub(r"\D", "", os.environ.get("STAFF_WHATSAPP", "918075316525"))
 VERIFY_TTL         = 10 * 60          # a code is valid for 10 minutes
 WA_OTP_TEMPLATE    = os.environ.get("WA_OTP_TEMPLATE", "locker_otp")   # Authentication template with "Copy code" button
 DEVICE_DAYS        = 90               # a verified phone is remembered in that browser for 90 days
@@ -170,14 +172,73 @@ def ensure_compartments(locker_id):
 init_db()
 
 # ---------------- NOTIFICATIONS ----------------
-def notify_staff(text):
+# When did each WhatsApp number last message us? Free messages are only allowed for
+# 24 hours after that (WhatsApp accepts them outside the window but fails them later).
+_last_inbound = {}
+
+def window_open(wa_id):
+    return time.time() - _last_inbound.get(wa_id, 0) < 23.5 * 3600
+
+def _telegram_staff(text):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_STAFF_CHAT_ID:
-        print("[staff]", text); return
+        return False
     try:
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-                      json={"chat_id": TELEGRAM_STAFF_CHAT_ID, "text": text}, timeout=5)
+        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                          json={"chat_id": TELEGRAM_STAFF_CHAT_ID, "text": text}, timeout=5)
+        return r.ok
     except Exception as e:
         print("Telegram failed:", e)
+        return False
+
+def _clean_param(v):
+    """WhatsApp template values can't contain new lines, tabs or long runs of spaces."""
+    v = re.sub(r"[\r\n\t]+", " | ", str(v)).strip()
+    v = re.sub(r" {4,}", "   ", v)
+    return (v or "-")[:900]
+
+def send_template(wa_id, template, params, buttons=None):
+    """Send an approved template. Returns (ok, reason)."""
+    if not WHATSAPP_TOKEN or not WHATSAPP_PHONE_ID:
+        print(f"[whatsapp -> {wa_id}] {template} {params}"); return True, ""
+    components = [{"type": "body", "parameters": [{"type": "text", "text": _clean_param(v)} for v in params]}]
+    if buttons:
+        components += buttons
+    payload = {"messaging_product": "whatsapp", "to": wa_id, "type": "template",
+               "template": {"name": template, "language": {"code": WHATSAPP_TEMPLATE_LANG},
+                            "components": components}}
+    try:
+        r = requests.post(f"https://graph.facebook.com/{WHATSAPP_API_VERSION}/{WHATSAPP_PHONE_ID}/messages",
+                          headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"}, json=payload, timeout=8)
+        if r.ok:
+            return True, ""
+        try:
+            err = r.json().get("error", {})
+            reason = err.get("error_user_msg") or err.get("message") or r.text[:200]
+        except ValueError:
+            reason = r.text[:200]
+        print("WhatsApp send failed:", template, r.status_code, r.text[:500])
+        return False, reason
+    except Exception as e:
+        print("WhatsApp send failed:", template, e)
+        return False, str(e)
+
+def notify_staff(text, template=None, params=None):
+    """Alert staff on the business WhatsApp.
+
+    1. Plain message first: free, and works whenever the staff phone has messaged the
+       automatic number in the last 24 hours (send it "hi" each morning to keep it free).
+    2. Otherwise the approved staff template (small per-message charge).
+    3. Telegram always gets a copy as a backup log.
+    """
+    sent = False
+    if STAFF_WHATSAPP:
+        if window_open(STAFF_WHATSAPP):
+            sent = send_text(STAFF_WHATSAPP, text)
+        if not sent and template:
+            sent, _ = send_template(STAFF_WHATSAPP, template, params or [])
+    tg = _telegram_staff(text)
+    if not sent and not tg:
+        print("[staff]", text)
 
 def notify_customer(phone, template, params, summary):
     """Send an approved WhatsApp template to a customer.
@@ -186,39 +247,13 @@ def notify_customer(phone, template, params, summary):
     params:   values for {{1}}, {{2}}, ... in order
     summary:  plain-language version, used in the staff alert if sending fails
     """
-    if not WHATSAPP_TOKEN or not WHATSAPP_PHONE_ID:
-        print(f"[whatsapp -> {phone}] {template} {params}"); return
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": f"91{phone}",
-        "type": "template",
-        "template": {
-            "name": template,
-            "language": {"code": WHATSAPP_TEMPLATE_LANG},
-            "components": [{
-                "type": "body",
-                "parameters": [{"type": "text", "text": str(v).strip() or "-"} for v in params],
-            }],
-        },
-    }
-    try:
-        r = requests.post(f"https://graph.facebook.com/{WHATSAPP_API_VERSION}/{WHATSAPP_PHONE_ID}/messages",
-                          headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"},
-                          json=payload, timeout=8)
-        if r.ok:
-            return
-        try:
-            err = r.json().get("error", {})
-            reason = err.get("error_user_msg") or err.get("message") or r.text[:200]
-        except ValueError:
-            reason = r.text[:200]
-        print("WhatsApp send failed:", r.status_code, r.text[:500])
-    except Exception as e:
-        reason = str(e)
-        print("WhatsApp send failed:", e)
+    ok, reason = send_template(f"91{phone}", template, params)
+    if ok:
+        return
     # Customer did not get the message -> tell staff so they can inform them manually
     notify_staff(f"⚠️ WhatsApp '{template}' to {phone} FAILED: {reason}\n"
-                 f"Please inform the customer manually: {summary}")
+                 f"Please inform the customer manually: {summary}",
+                 "staff_alert", ["-", f"WhatsApp to customer {phone} failed. Please inform them: {summary}"])
 
 def send_text(wa_id, text):
     """Plain WhatsApp text. Only allowed within 24h after the customer messaged us (free)."""
@@ -346,7 +381,8 @@ def do_pickup(locker_id, compartment, order):
                (locker_id, compartment))
     db.commit()
     notify_staff(f"PICKED UP · Locker {locker_id} · Compartment {compartment}\n"
-                 f"{order['customer_name']} · Order #{order['id']} complete.")
+                 f"{order['customer_name']} · Order #{order['id']} complete.",
+                 "staff_alert", [order["id"], f"collected by {order['customer_name']} from compartment {compartment}. Order complete."])
 
 # ---------------- WhatsApp verification (pending codes, kept in memory) ----------------
 _pending = {}            # token -> dict(code, action, locker_id, compartment, name, phone, order_id, created, state, error)
@@ -543,6 +579,11 @@ def verify_status():
 
 def handle_incoming_whatsapp(wa_id, wa_name, text):
     """Called by whatsapp_webhook.py for every customer message. True = handled."""
+    _last_inbound[wa_id] = time.time()
+    if STAFF_WHATSAPP and wa_id == STAFF_WHATSAPP:
+        send_text(wa_id, "✅ Staff alerts are on. For the next 24 hours they come here as free messages. "
+                         "Send any message here each morning to keep it that way.")
+        return True
     m = re.search(r"\b(DROP|PICK)\s*-?\s*(\d{4})\b", text or "", re.IGNORECASE)
     if m:
         word, code = m.group(1).upper(), m.group(2)
@@ -575,7 +616,8 @@ def handle_incoming_whatsapp(wa_id, wa_name, text):
             match.update(state="done")
             if sender_phone != match["phone"]:
                 notify_staff(f"ℹ️ Order #{order_id}: customer typed {match['phone']} but verified from "
-                             f"{sender_phone}. Saved the verified number.")
+                             f"{sender_phone}. Saved the verified number.",
+                             "staff_alert", [order_id, f"customer typed {match['phone']} but verified from {sender_phone}. Saved the verified number."])
             send_text(wa_id, f"✅ Verified. Compartment {match['compartment']} is opening now. "
                              f"Place your laundry inside and close the door.")
         else:
@@ -603,7 +645,10 @@ def handle_incoming_whatsapp(wa_id, wa_name, text):
         _auto_replied[wa_id] = now
         send_text(wa_id, "Hi! This number sends automatic Purewash updates. To chat with our team, "
                          f"tap here: https://wa.me/{WA_SUPPORT_NUMBER}")
-    return False
+    who = wa_name or wa_id
+    notify_staff(f"📩 WhatsApp from {who} (+{wa_id}):\n{text}\nReply to them here: https://wa.me/{wa_id}",
+                 "staff_customer_message", [who, wa_id, text])
+    return True
 
 # ---------------- ESP32 polling ----------------
 @app.route("/api/check-unlock")
@@ -646,7 +691,9 @@ def door_latched():
             extra += " · ⚠️ includes delicate/heavy items"
         notify_staff(f"NEW DROP-OFF · Locker {locker_id} · Compartment {comp}\n"
                      f"{dropped['customer_name']} · {dropped['customer_phone']}{extra}\n"
-                     f"Order #{dropped['id']} — please collect for washing.")
+                     f"Order #{dropped['id']} — please collect for washing.",
+                     "staff_new_dropoff",
+                     [comp, dropped["customer_name"], dropped["customer_phone"], extra.strip(), dropped["id"]])
         notify_customer(dropped["customer_phone"], "laundry_received",
                         [dropped["customer_name"], comp],
                         f"laundry received in compartment {comp} (order #{dropped['id']})")
@@ -793,12 +840,15 @@ def staff_assess():
     lines += [f"Amount: ₹{amount}"]
     if mismatch:
         lines += ["If the count looks wrong, please reply within 2 hours so we can check before washing."]
-    sent = send_text("91" + clean_phone(order["customer_phone"]), "\n".join(lines))
+    cust = "91" + clean_phone(order["customer_phone"])
+    sent = window_open(cust) and send_text(cust, "\n".join(lines))
     if not sent:
         notify_staff(f"⚠️ Could not WhatsApp the bill for order #{order['id']} to {order['customer_phone']} "
-                     f"(more than 24h since they messaged). Please call them: {staff_count} items, ₹{amount}.")
+                     f"(they haven't messaged us in the last 24h). Please call them: {staff_count} items, ₹{amount}.",
+                     "staff_alert", [order["id"], f"bill could not be sent to {order['customer_phone']}. Please call them: {staff_count} items, Rs {amount}."])
     if mismatch:
-        notify_staff(f"⚠️ Order #{order['id']}: customer entered {order['item_count']} items, staff counted {staff_count}.")
+        notify_staff(f"⚠️ Order #{order['id']}: customer entered {order['item_count']} items, staff counted {staff_count}.",
+                     "staff_alert", [order["id"], f"customer entered {order['item_count']} items, staff counted {staff_count}."])
     return jsonify(ok=True, amount=amount, standard=standard, mismatch=bool(mismatch), sent=sent)
 
 @app.route("/staff/api/status", methods=["POST"])
